@@ -1,4 +1,15 @@
+# Build artifacts
 /target
-Cargo.lock
 *.exe
 *.dll
+
+# Approval tokens from real scans (sensitive — never commit)
+real_survey_tokens.json
+
+# Python caches
+__pycache__/
+*.pyc
+
+# OS junk
+Thumbs.db
+.DS_Store

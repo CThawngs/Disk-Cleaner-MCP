@@ -326,6 +326,20 @@ impl ScanEngine {
                 continue;
             }
 
+            // 3b) Path must still exist on disk (e.g. not already moved by organize).
+            if !path.exists() {
+                outcomes.push(DeleteOutcome {
+                    path: item.path.clone(),
+                    status: "not_found".into(),
+                    message: Some(
+                        "Path no longer exists on disk (may have been moved/deleted already). Re-run scan."
+                            .into(),
+                    ),
+                });
+                errors += 1;
+                continue;
+            }
+
             // 4) Execute delete: trash or permanent
             if req.permanent {
                 match std::fs::remove_file(path) {
@@ -387,6 +401,243 @@ impl ScanEngine {
             scan_id: req.scan_id.clone(),
             trashed,
             permanent,
+            rejected,
+            errors,
+            outcomes,
+        }
+    }
+
+    /// Organize files: move scan entries into a destination directory grouped by
+    /// category or extension. Safe: token-verified, never overwrites, protected paths rejected.
+    pub fn organize(&self, req: &OrganizeRequest) -> OrganizeResult {
+        let session = match self.get_session(&req.scan_id) {
+            Some(s) => s,
+            None => {
+                return OrganizeResult {
+                    scan_id: req.scan_id.clone(),
+                    moved: 0,
+                    dry_run: 0,
+                    skipped: 0,
+                    rejected: 0,
+                    errors: 0,
+                    outcomes: vec![OrganizeOutcome {
+                        path: "(scan not found)".into(),
+                        status: "error".into(),
+                        dest: None,
+                        message: Some(format!(
+                            "Scan session '{}' not found. Run scan first.",
+                            req.scan_id
+                        )),
+                    }],
+                };
+            }
+        };
+
+        let dest = PathBuf::from(&req.dest_dir);
+        if !dest.exists() || !dest.is_dir() {
+            return OrganizeResult {
+                scan_id: req.scan_id.clone(),
+                moved: 0,
+                dry_run: 0,
+                skipped: 0,
+                rejected: 0,
+                errors: 1,
+                outcomes: vec![OrganizeOutcome {
+                    path: "(dest)".into(),
+                    status: "error".into(),
+                    dest: None,
+                    message: Some(format!(
+                        "Destination directory does not exist or is not a directory: {}",
+                        req.dest_dir
+                    )),
+                }],
+            };
+        }
+
+        // Note: intentionally NOT canonicalizing dest — on Windows canonicalize
+        // adds the `\\?\` extended-length prefix, which breaks std::fs::rename
+        // between normal and extended paths. dest was already validated above.
+        let dest_canon = dest.clone();
+        let strategy = req.strategy.clone().unwrap_or(OrganizeStrategy::Category);
+
+        let mut moved = 0u32;
+        let mut dry_run = 0u32;
+        let mut skipped = 0u32;
+        let mut rejected = 0u32;
+        let mut errors = 0u32;
+        let mut outcomes = Vec::new();
+
+        for item in &req.items {
+            // 1) exists in session?
+            let entry = session
+                .entries
+                .iter()
+                .find(|e| e.path == item.path)
+                .cloned();
+            let entry = match entry {
+                Some(e) => e,
+                None => {
+                    outcomes.push(OrganizeOutcome {
+                        path: item.path.clone(),
+                        status: "not_found".into(),
+                        dest: None,
+                        message: Some("Path not found in scan results. Re-run scan.".into()),
+                    });
+                    errors += 1;
+                    continue;
+                }
+            };
+
+            // 2) protected?
+            let src = Path::new(&item.path);
+            if safety::is_protected(src) {
+                outcomes.push(OrganizeOutcome {
+                    path: item.path.clone(),
+                    status: "rejected".into(),
+                    dest: None,
+                    message: Some(
+                        "Path is system-protected. Operation BLOCKED by Safety Guard.".into(),
+                    ),
+                });
+                rejected += 1;
+                continue;
+            }
+
+            // 3) token?
+            if !safety::verify_token(&session.salt, &item.path, &item.approval_token) {
+                outcomes.push(OrganizeOutcome {
+                    path: item.path.clone(),
+                    status: "rejected".into(),
+                    dest: None,
+                    message: Some(
+                        "approval_token mismatch. Token expired or invalid for this scan session."
+                            .into(),
+                    ),
+                });
+                rejected += 1;
+                continue;
+            }
+
+            // 4) Do not organize directories recursively (only files + empty dirs handled later)
+            if entry.kind == "dir" {
+                outcomes.push(OrganizeOutcome {
+                    path: item.path.clone(),
+                    status: "skipped".into(),
+                    dest: None,
+                    message: Some("Directories are not moved by organize (kept in place).".into()),
+                });
+                skipped += 1;
+                continue;
+            }
+
+            // 5) Compute group subfolder
+            let group = match strategy {
+                OrganizeStrategy::Category => entry
+                    .category_label
+                    .replace(['/', '\\'], "_")
+                    .to_uppercase(),
+                OrganizeStrategy::Extension => entry
+                    .extension
+                    .clone()
+                    .unwrap_or_else(|| "NO_EXT".into())
+                    .to_uppercase(),
+            };
+            let group_dir = dest_canon.join(&group);
+
+            // a) If group already exists as a FILE → error
+            if group_dir.exists() && !group_dir.is_dir() {
+                outcomes.push(OrganizeOutcome {
+                    path: item.path.clone(),
+                    status: "error".into(),
+                    dest: None,
+                    message: Some(format!(
+                        "Cannot create group dir '{}' — a file with that name exists.",
+                        group
+                    )),
+                });
+                errors += 1;
+                continue;
+            }
+
+            // b) Destination exists → skip (never overwrite)
+            let file_name = src.file_name().map(|f| f.to_string_lossy().to_string());
+            let file_name = match file_name {
+                Some(f) => f,
+                None => {
+                    outcomes.push(OrganizeOutcome {
+                        path: item.path.clone(),
+                        status: "error".into(),
+                        dest: None,
+                        message: Some("No file name for path.".into()),
+                    });
+                    errors += 1;
+                    continue;
+                }
+            };
+            let dest_path = group_dir.join(&file_name);
+            let dest_str = dest_path.to_string_lossy().replace('\\', "/");
+
+            if dest_path.exists() {
+                outcomes.push(OrganizeOutcome {
+                    path: item.path.clone(),
+                    status: "skipped".into(),
+                    dest: Some(dest_str.clone()),
+                    message: Some("Destination already exists. Skipped (no overwrite).".into()),
+                });
+                skipped += 1;
+                continue;
+            }
+
+            // 7) Dry-run or move
+            if req.dry_run {
+                outcomes.push(OrganizeOutcome {
+                    path: item.path.clone(),
+                    status: "dry_run".into(),
+                    dest: Some(dest_str.clone()),
+                    message: Some("Planned move (dry run).".into()),
+                });
+                dry_run += 1;
+                continue;
+            }
+
+            // Create group dir then move
+            if let Err(e) = std::fs::create_dir_all(&group_dir) {
+                outcomes.push(OrganizeOutcome {
+                    path: item.path.clone(),
+                    status: "error".into(),
+                    dest: None,
+                    message: Some(format!("Failed to create group dir: {}", e)),
+                });
+                errors += 1;
+                continue;
+            }
+            match std::fs::rename(src, &dest_path) {
+                Ok(_) => {
+                    outcomes.push(OrganizeOutcome {
+                        path: item.path.clone(),
+                        status: "moved".into(),
+                        dest: Some(dest_str.clone()),
+                        message: None,
+                    });
+                    moved += 1;
+                }
+                Err(e) => {
+                    outcomes.push(OrganizeOutcome {
+                        path: item.path.clone(),
+                        status: "error".into(),
+                        dest: Some(dest_str.clone()),
+                        message: Some(format!("Move failed: {}", e)),
+                    });
+                    errors += 1;
+                }
+            }
+        }
+
+        OrganizeResult {
+            scan_id: req.scan_id.clone(),
+            moved,
+            dry_run,
+            skipped,
             rejected,
             errors,
             outcomes,
@@ -587,5 +838,212 @@ mod tests {
         assert!(!Path::new(&entry.path).exists());
 
         let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    // ---- organize tests ----
+
+    fn setup_organize_fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        // returns (src_dir, dest_dir); `tag` makes each test's dir unique
+        // (parallel test threads share the same process id, so pid alone collides)
+        let base = std::env::temp_dir().join(format!("dc-mcp-org-{}-{}", std::process::id(), tag));
+        let src = base.join("src");
+        let dest = base.join("dest");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(src.join("photo.jpg"), b"jpeg-data").unwrap();
+        std::fs::write(src.join("doc.pdf"), b"pdf-data").unwrap();
+        std::fs::write(src.join("notes.txt"), b"txt-data").unwrap();
+        (src, dest)
+    }
+
+    #[test]
+    fn test_organize_moves_by_category() {
+        let (src, dest) = setup_organize_fixture("moves");
+        let mut engine = ScanEngine::new();
+        let result = engine.scan(&src).unwrap();
+        let session = engine.get_session(&result.summary.scan_id).unwrap();
+
+        let items: Vec<OrganizeItemRequest> = session
+            .entries
+            .iter()
+            .filter(|e| e.kind == "file")
+            .map(|e| OrganizeItemRequest {
+                approval_token: e.approval_token.clone(),
+                path: e.path.clone(),
+            })
+            .collect();
+        assert!(items.len() >= 3);
+
+        let org_req = OrganizeRequest {
+            scan_id: result.summary.scan_id.clone(),
+            items,
+            dest_dir: dest.to_string_lossy().to_string(),
+            strategy: Some(OrganizeStrategy::Extension),
+            dry_run: false,
+        };
+        let org_result = engine.organize(&org_req);
+        assert_eq!(
+            org_result.moved, 3,
+            "all 3 files should move; got {:?}",
+            org_result.outcomes
+        );
+        assert_eq!(org_result.rejected, 0);
+        assert_eq!(org_result.errors, 0);
+
+        // Files gone from src
+        assert!(!src.join("photo.jpg").exists());
+        assert!(!src.join("doc.pdf").exists());
+        assert!(!src.join("notes.txt").exists());
+
+        // Extension grouping: JPG / PDF / TXT folders
+        assert!(
+            dest.join("JPG").join("photo.jpg").exists(),
+            "photo.jpg → dest/JPG"
+        );
+        assert!(
+            dest.join("PDF").join("doc.pdf").exists(),
+            "doc.pdf → dest/PDF"
+        );
+        assert!(
+            dest.join("TXT").join("notes.txt").exists(),
+            "notes.txt → dest/TXT"
+        );
+
+        let _ = std::fs::remove_dir_all(src.parent().unwrap());
+    }
+
+    #[test]
+    fn test_organize_dry_run_moves_nothing() {
+        let (src, dest) = setup_organize_fixture("dryrun");
+        let mut engine = ScanEngine::new();
+        let result = engine.scan(&src).unwrap();
+        let session = engine.get_session(&result.summary.scan_id).unwrap();
+
+        let items: Vec<OrganizeItemRequest> = session
+            .entries
+            .iter()
+            .filter(|e| e.kind == "file")
+            .map(|e| OrganizeItemRequest {
+                approval_token: e.approval_token.clone(),
+                path: e.path.clone(),
+            })
+            .collect();
+
+        let org_req = OrganizeRequest {
+            scan_id: result.summary.scan_id.clone(),
+            items,
+            dest_dir: dest.to_string_lossy().to_string(),
+            strategy: Some(OrganizeStrategy::Extension),
+            dry_run: true,
+        };
+        let org_result = engine.organize(&org_req);
+        assert_eq!(org_result.dry_run, org_result.outcomes.len() as u32);
+        assert_eq!(org_result.moved, 0);
+
+        // Nothing moved
+        assert!(src.join("photo.jpg").exists());
+        assert!(!dest.join("JPG").join("photo.jpg").exists());
+
+        let _ = std::fs::remove_dir_all(src.parent().unwrap());
+    }
+
+    #[test]
+    fn test_organize_wrong_token_rejected() {
+        let (src, dest) = setup_organize_fixture("wrongtoken");
+        let mut engine = ScanEngine::new();
+        let result = engine.scan(&src).unwrap();
+        let session = engine.get_session(&result.summary.scan_id).unwrap();
+        let entry = session
+            .entries
+            .iter()
+            .find(|e| e.path.ends_with("photo.jpg"))
+            .unwrap();
+
+        let org_req = OrganizeRequest {
+            scan_id: result.summary.scan_id.clone(),
+            items: vec![OrganizeItemRequest {
+                approval_token: "wrong_token".into(),
+                path: entry.path.clone(),
+            }],
+            dest_dir: dest.to_string_lossy().to_string(),
+            strategy: None,
+            dry_run: false,
+        };
+        let org_result = engine.organize(&org_req);
+        assert_eq!(org_result.rejected, 1);
+        assert!(
+            src.join("photo.jpg").exists(),
+            "file must not move with bad token"
+        );
+
+        let _ = std::fs::remove_dir_all(src.parent().unwrap());
+    }
+
+    #[test]
+    fn test_organize_nonexistent_dest_errors() {
+        let (src, dest) = setup_organize_fixture("nodest");
+        let mut engine = ScanEngine::new();
+        let result = engine.scan(&src).unwrap();
+        let session = engine.get_session(&result.summary.scan_id).unwrap();
+
+        let items: Vec<OrganizeItemRequest> = session
+            .entries
+            .iter()
+            .filter(|e| e.kind == "file")
+            .map(|e| OrganizeItemRequest {
+                approval_token: e.approval_token.clone(),
+                path: e.path.clone(),
+            })
+            .collect();
+
+        let org_req = OrganizeRequest {
+            scan_id: result.summary.scan_id.clone(),
+            items,
+            dest_dir: dest.join("does-not-exist").to_string_lossy().to_string(),
+            strategy: None,
+            dry_run: false,
+        };
+        let org_result = engine.organize(&org_req);
+        assert_eq!(org_result.errors, 1);
+        assert!(src.join("photo.jpg").exists());
+
+        let _ = std::fs::remove_dir_all(src.parent().unwrap());
+    }
+
+    #[test]
+    fn test_organize_skips_existing_dest() {
+        let (src, dest) = setup_organize_fixture("skipdest");
+        let mut engine = ScanEngine::new();
+        let result = engine.scan(&src).unwrap();
+        let session = engine.get_session(&result.summary.scan_id).unwrap();
+        let entry = session
+            .entries
+            .iter()
+            .find(|e| e.path.ends_with("photo.jpg"))
+            .unwrap()
+            .clone();
+
+        // Pre-create dest/JPG/photo.jpg to force skip (extension strategy → JPG/)
+        let dest_jpg = dest.join("JPG");
+        std::fs::create_dir_all(&dest_jpg).unwrap();
+        std::fs::write(dest_jpg.join("photo.jpg"), b"existing").unwrap();
+
+        let org_req = OrganizeRequest {
+            scan_id: result.summary.scan_id.clone(),
+            items: vec![OrganizeItemRequest {
+                approval_token: entry.approval_token.clone(),
+                path: entry.path.clone(),
+            }],
+            dest_dir: dest.to_string_lossy().to_string(),
+            strategy: Some(OrganizeStrategy::Extension),
+            dry_run: false,
+        };
+        let org_result = engine.organize(&org_req);
+        assert_eq!(org_result.skipped, 1);
+        assert_eq!(org_result.moved, 0);
+        assert!(src.join("photo.jpg").exists(), "original must be untouched");
+
+        let _ = std::fs::remove_dir_all(src.parent().unwrap());
     }
 }

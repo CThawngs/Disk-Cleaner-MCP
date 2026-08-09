@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # disk-cleaner-mcp — Unix (macOS/Linux) installer
-# Usage:  curl -fsSL https://github.com/<OWNER>/disk-cleaner-mcp/releases/latest/download/install.sh | bash
+# Usage:  curl -fsSL https://github.com/CThawngs/Disk-Cleaner-MCP/releases/latest/download/install.sh | bash
 # Installs binary + prints MCP client configuration snippets.
 
 set -euo pipefail
 
 VERSION="${1:-latest}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
-OWNER="<OWNER>"
-REPO="disk-cleaner-mcp"
+OWNER="CThawngs"
+REPO="Disk-Cleaner-MCP"
 
 echo "=== disk-cleaner-mcp installer (Unix) ==="
 

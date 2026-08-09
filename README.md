@@ -1,39 +1,56 @@
-# disk-cleaner-mcp
+# Disk-Cleaner-MCP
 
-A **Rust-based MCP (Model Context Protocol) server** that lets AI agents — Hermes, Claude, Cursor, OpenClaw, Codex — scan, analyze, and safely clean junk files on **Windows, macOS, and Linux**.
+A **Rust-based MCP (Model Context Protocol) server** that gives AI agents — Hermes, Claude, Cursor, OpenClaw, Codex — the ability to **scan, analyze, organize, and safely clean junk files** on **Windows, macOS, and Linux**.
 
-Built for speed (multithreaded `jwalk` + `rayon`), safety (immutable blocklist + approval tokens), and zero-cost distribution (single static binary, GitHub Actions CI).
+> Built for speed (multithreaded `jwalk` + `rayon`), safety (immutable blocklist + per-scan approval tokens), and zero-cost distribution (single static binary + GitHub Actions CI).
+
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue)
+![Rust](https://img.shields.io/badge/Rust-1.95-orange)
+![License](https://img.shields.io/badge/license-MIT-green)
 
 ---
 
-## Features
+## ✨ Features
 
-- **6 MCP tools**: `get_system_status`, `scan`, `analyze`, `delete`, `list_categories`, `get_report`
+- **7 MCP tools**:
+  | Tool | Description |
+  |---|---|
+  | `get_system_status` | Disk usage, user directories, platform info |
+  | `list_categories` | All junk categories + descriptions |
+  | `scan` | Scan a root path, returns `scanId` + summary |
+  | `analyze` | Filter/page entries (category, size, age, sort), returns approval tokens |
+  | `organize` | **Sort files into a destination tree by category or extension** (dry-run supported, never overwrites) |
+  | `delete` | Move files to trash / permanent (requires double confirmation) |
+  | `get_report` | Markdown report of a scan |
+
 - **Safety Guard** (immutable, cannot be disabled):
-  - Blocks `C:\Windows`, `C:\Program Files`, `/usr`, `/boot`, `pagefile.sys`, etc.
+  - Protected paths blocked: `C:\Windows`, `C:\Program Files`, `/usr`, `/boot`, `pagefile.sys`, `$Recycle.Bin`, etc.
   - Default delete = **recycle bin / trash** (recoverable)
   - Permanent delete requires `permanent=true` + `confirm_permanent=true`
-  - Every delete requires an **approval token** (SHA-256 of salt + path) from the original scan — prevents stale-path attacks
-- **13 junk categories**: temp, log, cache, browser_cache, node_cache, python_cache, installer, download, backup, archive, crash_dump, thumbnail, other
-- **Multithreaded scan**: `jwalk` parallel directory walker + `rayon` for metadata extraction
-- **Cross-platform**: Windows, macOS (Intel + ARM), Linux
-- **Single binary**: no runtime dependencies, no Node.js, no Python — just one `.exe` / binary
+  - Every delete/organize requires an **approval token** (SHA-256 of salt + path) issued per scan — stale/mismatched tokens are rejected
+  - `organize` **never overwrites**: if the destination file exists, it's skipped
+
+- **13 junk categories**: `temp`, `log`, `cache`, `browser_cache`, `node_cache`, `python_cache`, `installer`, `download`, `backup`, `archive`, `crash_dump`, `thumbnail`, `other`
+
+- **Multithreaded scan**: `jwalk` parallel directory walker + `rayon` metadata extraction
+
+- **Cross-platform**: Windows, macOS (Intel + ARM), Linux — single static binary
 
 ---
 
-## Quick Start
+## 🚀 Quick Start
 
 ### Install (Windows)
 
 ```powershell
-# Download the binary + register with MCP clients
+# Downloads the binary + registers with MCP clients
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
 ### Install (macOS/Linux)
 
 ```bash
-curl -fsSL https://github.com/<OWNER>/disk-cleaner-mcp/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/CThawngs/Disk-Cleaner-MCP/releases/latest/download/install.sh | bash
 ```
 
 ### Build from source
@@ -45,7 +62,7 @@ cargo build --release
 
 ### Configure MCP client
 
-Add to your MCP client config (e.g., Claude Desktop `claude_desktop_config.json`):
+Add to your MCP client config (e.g., Claude Desktop `claude_desktop_config.json`, Cursor `.cursor/mcp.json`, or OpenClaw `mcp.json`):
 
 ```json
 {
@@ -58,15 +75,17 @@ Add to your MCP client config (e.g., Claude Desktop `claude_desktop_config.json`
 }
 ```
 
+> On macOS/Linux: `"command": "/usr/local/bin/disk-cleaner-mcp"`
+
 ---
 
-## Workflow
+## 🧹 Workflow
 
 ```
 1. get_system_status  →  See disk usage, user dirs
 2. scan               →  Scan a root path (e.g., Downloads), get scanId + summary
 3. analyze            →  Filter entries (category, size, age), get approval tokens
-4. (Review)           →  AI agent or human reviews the list
+4. organize (optional) → Sort files into category/extension subfolders (dry-run first!)
 5. delete             →  Delete with approval tokens (trash by default)
 ```
 
@@ -79,19 +98,22 @@ Add to your MCP client config (e.g., Claude Desktop `claude_desktop_config.json`
 // 2. Analyze (find installers > 100MB)
 { "method": "tools/call", "params": { "name": "analyze", "arguments": { "scanId": "<id>", "category": "installer", "minSize": 104857600 } } }
 
-// 3. Delete (move to trash)
+// 3. Organize downloads by extension (dry-run first!)
+{ "method": "tools/call", "params": { "name": "organize", "arguments": { "scanId": "<id>", "items": [{"approvalToken":"...","path":"..."}], "destDir": "C:/Users/me/Downloads/Organized", "strategy": "extension", "dryRun": true } } }
+
+// 4. Delete (move to trash)
 { "method": "tools/call", "params": { "name": "delete", "arguments": { "scanId": "<id>", "items": [{"approvalToken":"...","path":"..."}] } } }
 ```
 
 ---
 
-## Safety Architecture
+## 🛡️ Safety Architecture
 
 ```
 ┌──────────────────────────────────┐
 │  AI Agent (LLM)                  │
 │  - Suggests what to delete       │
-│  - Provides approval tokens       │
+│  - Provides approval tokens      │
 └──────────┬───────────────────────┘
            │ JSON-RPC over stdio
 ┌──────────▼───────────────────────┐
@@ -109,16 +131,21 @@ Add to your MCP client config (e.g., Claude Desktop `claude_desktop_config.json`
 │  │ - Category classification    │ │
 │  └─────────────────────────────┘ │
 │  ┌─────────────────────────────┐ │
+│  │ Organize Engine              │ │
+│  │ - category/extension groups  │ │
+│  │ - never overwrite, dry-run   │ │
+│  └─────────────────────────────┘ │
+│  ┌─────────────────────────────┐ │
 │  │ Delete Engine                │ │
-│  │ - trash crate (default)       │ │
-│  │ - permanent (opt-in)          │ │
+│  │ - trash crate (default)      │ │
+│  │ - permanent (opt-in)         │ │
 │  └─────────────────────────────┘ │
 └──────────────────────────────────┘
 ```
 
 ---
 
-## Tech Stack
+## 📚 Tech Stack
 
 | Component | Crate | Purpose |
 |---|---|---|
@@ -132,25 +159,64 @@ Add to your MCP client config (e.g., Claude Desktop `claude_desktop_config.json`
 
 ---
 
-## Development
+## 🧪 Development
 
 ```bash
 # Check
 cargo check
 
-# Test (19 unit tests)
+# Test (24 unit tests)
 cargo test
 
-# Lint
+# Lint (zero warnings required)
 cargo clippy --all-targets -- -D warnings
 
-# Format
+# Format check
 cargo fmt --check
 
 # Release build
 cargo build --release
+
+# End-to-end smoke test (stdio JSON-RPC)
+python smoke_test.py target/release/disk-cleaner-mcp.exe
 ```
 
-## License
+### Definition of Done
 
-MIT
+Every change must pass: `cargo fmt --check` → `cargo clippy --all-targets -- -D warnings` → `cargo build --release` → `cargo test` → smoke test E2E.
+
+---
+
+## 📁 Repository Layout
+
+```
+├── src/
+│   ├── main.rs            # Entry point (tokio + stdio transport)
+│   ├── model.rs           # JSON-serializable data models (camelCase)
+│   ├── safety.rs          # Safety Guard: blocklist, tokens, path normalization
+│   ├── engine.rs          # Scan/analyze/organize/delete engines
+│   ├── analytics.rs       # 13 junk categories + report generator
+│   ├── server.rs          # MCP tool handlers (7 tools)
+│   └── sysinfo_helper.rs  # Disk info, user dirs
+├── .github/workflows/ci.yml   # CI: fmt + clippy + test + build on 3 OS
+├── install.ps1                # Windows installer
+├── install.sh                 # macOS/Linux installer
+├── smoke_test.py              # End-to-end JSON-RPC smoke test
+├── demo_real.py               # Real-world cleanup demo (creates junk, cleans it)
+└── survey_real.py             # Read-only junk survey (measures reclaimable space)
+```
+
+---
+
+## 🤝 Contributing
+
+1. Fork the repo
+2. Create a feature branch
+3. Commit with clear messages
+4. Open a PR — CI runs fmt + clippy + test on Windows/macOS/Linux
+
+---
+
+## 📄 License
+
+MIT — free to use, modify, and distribute. No fees, no telemetry, no cloud dependency — **100% free forever**.

@@ -18,7 +18,7 @@ New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 
 # 2. Download prebuilt binary from GitHub Releases
 if (-not $SkipBinary) {
-    $url = "https://github.com/<OWNER>/disk-cleaner-mcp/releases/download/$Version/disk-cleaner-mcp-x86_64-pc-windows-msvc.exe"
+    $url = "https://github.com/CThawngs/Disk-Cleaner-MCP/releases/download/$Version/disk-cleaner-mcp-x86_64-pc-windows-msvc.exe"
     Write-Host "Downloading $url ..."
     Invoke-WebRequest -Uri $url -OutFile $Db
 }

@@ -151,6 +151,24 @@ impl DiskCleanerServer {
         serde_json::to_string_pretty(&result).unwrap_or_else(|e| format!("Error: {}", e))
     }
 
+    /// Organize files into subfolders by category/extension.
+    #[tool(
+        name = "organize",
+        description = "Organize files into the destination directory, grouped into subfolders by category (default) or extension. Safe: token-verified (like delete), NEVER overwrites existing files, protected system paths are rejected, directories are skipped (not moved).\n\nParameters:\n- scanId: from scan()\n- items: array of { approvalToken, path } from analyze()\n- destDir: existing destination directory (server will NOT create it; creates only group subfolders inside it)\n- strategy: 'category' (default) or 'extension'\n- dryRun: true → only compute planned moves, move nothing\n\nExample: organize(scanId, [{approvalToken, path}], 'C:/Users/me/Organized', strategy='category') moves a .jpg into .../Organized/Images/, a .log into .../Organized/Log Files/."
+    )]
+    async fn organize(&self, Parameters(params): Parameters<OrganizeParams>) -> String {
+        let engine = self.engine.lock().unwrap();
+        let req = OrganizeRequest {
+            scan_id: params.scan_id.clone(),
+            items: params.items.clone(),
+            dest_dir: params.dest_dir.clone(),
+            strategy: params.strategy,
+            dry_run: params.dry_run,
+        };
+        let result = engine.organize(&req);
+        serde_json::to_string_pretty(&result).unwrap_or_else(|e| format!("Error: {}", e))
+    }
+
     /// Get a markdown report of scan results.
     #[tool(
         name = "get_report",
@@ -247,6 +265,25 @@ pub struct DeleteParams {
     #[schemars(description = "Must be true to confirm permanent deletion.")]
     #[serde(default)]
     pub confirm_permanent: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OrganizeParams {
+    #[schemars(description = "Scan ID from scan()")]
+    pub scan_id: String,
+    #[schemars(
+        description = "Array of items to organize, each with approvalToken + path from analyze()"
+    )]
+    pub items: Vec<OrganizeItemRequest>,
+    #[schemars(description = "Existing destination directory (group subfolders created inside)")]
+    pub dest_dir: String,
+    #[schemars(description = "Grouping strategy: 'category' (default) or 'extension'")]
+    #[serde(default)]
+    pub strategy: Option<OrganizeStrategy>,
+    #[schemars(description = "True → only plan moves, move nothing")]
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

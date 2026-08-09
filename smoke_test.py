@@ -110,6 +110,40 @@ def main():
     del_path = tok_entry["path"]
     print(f"  ✤ token entry: {os.path.basename(del_path)}")
 
+    # 5b. organize test: dry-run first (nothing moves)
+    organized_dir = os.path.join(tmp, "organized")
+    os.makedirs(organized_dir, exist_ok=True)
+    resp = srv.request("tools/call", {
+        "name": "organize",
+        "arguments": {
+            "scanId": scan_id,
+            "items": [{"approvalToken": token, "path": del_path}],
+            "destDir": organized_dir,
+            "dryRun": True,
+        },
+    })
+    check_ok(resp, "organize (dry run)")
+    org = json.loads(resp["result"]["content"][0]["text"])
+    assert org.get("dryRun", 0) >= 1, f"expected dryRun plan, got: {org}"
+    assert org.get("moved", 0) == 0, "dry run must not move anything"
+    print(f"  ✓ dry-run planned (no files moved)")
+
+    # 5c. organize WRONG token → rejected, nothing moves
+    resp = srv.request("tools/call", {
+        "name": "organize",
+        "arguments": {
+            "scanId": scan_id,
+            "items": [{"approvalToken": "deadbeef", "path": del_path}],
+            "destDir": organized_dir,
+            "dryRun": False,
+        },
+    })
+    check_ok(resp, "organize (wrong token → rejected)")
+    org = json.loads(resp["result"]["content"][0]["text"])
+    assert org.get("rejected", 0) >= 1, f"expected rejection, got: {org}"
+    assert os.path.exists(del_path), "file must still exist after rejected organize"
+    print("  ✓ organize token rejection verified")
+
     # 6. delete (trash) — expect ok
     resp = srv.request("tools/call", {
         "name": "delete",

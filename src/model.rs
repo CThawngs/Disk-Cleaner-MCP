@@ -97,6 +97,64 @@ pub struct DeleteResult {
     pub outcomes: Vec<DeleteOutcome>,
 }
 
+/// Per-item organize request (path+token). Reuses token verification.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OrganizeItemRequest {
+    pub approval_token: String,
+    pub path: String,
+}
+
+/// Organize strategy controls how files are grouped.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum OrganizeStrategy {
+    /// Group by junk category: Images, Documents, Archives, ...
+    #[serde(rename = "category")]
+    Category,
+    /// Group by file extension: jpg → JPG/, pdf → PDF/
+    #[serde(rename = "extension")]
+    Extension,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OrganizeRequest {
+    pub scan_id: String,
+    pub items: Vec<OrganizeItemRequest>,
+    /// Destination directory; MUST exist (server does not create arbitrary dirs).
+    pub dest_dir: String,
+    #[serde(default)]
+    pub strategy: Option<OrganizeStrategy>,
+    /// If true, only compute + return planned moves; nothing is moved.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OrganizeOutcome {
+    pub path: String,
+    /// "moved" | "dry_run" | "skipped" | "rejected" | "error" | "not_found"
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OrganizeResult {
+    pub scan_id: String,
+    pub moved: u32,
+    pub dry_run: u32,
+    pub skipped: u32,
+    pub rejected: u32,
+    pub errors: u32,
+    pub outcomes: Vec<OrganizeOutcome>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalyzeRequest {
