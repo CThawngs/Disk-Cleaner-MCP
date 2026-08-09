@@ -1,0 +1,33 @@
+[package]
+name = "disk-cleaner-mcp"
+version = "0.1.0"
+edition = "2021"
+authors = ["Zero News <techgrowthvietnam@gmail.com>"]
+license = "MIT"
+description = "Rust MCP server: fast safe disk cleanup for AI agents (Windows/macOS/Linux)"
+repository = "https://github.com/zenews/disk-cleaner-mcp"
+keywords = ["mcp", "disk", "cleanup", "rust", "ai-agent"]
+categories = ["filesystem", "development-tools"]
+
+[dependencies]
+anyhow = "1.0"
+dirs = "6.0"
+glob = "0.3"
+jwalk = "0.9"
+rayon = "1.12"
+rmcp = { version = "3.1", features = ["server", "macros", "schemars", "transport-io"] }
+schemars = { version = "1", features = ["preserve_order"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.11"
+sysinfo = "0.39"
+tokio = { version = "1.53", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+trash = "5.2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
