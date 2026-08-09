@@ -20,6 +20,9 @@
 - **Giai đoạn:** v0.1 — MVP MCP server (stdio) + Safety Guard + phân phối GitHub Actions.
 - **Stack:** Rust (rmcp 3.1, tokio, jwalk 0.9, rayon, sysinfo, trash 5, sha2).
 - **Nhịp công việc:** 10-bước Autonomous Agent (xem thủ công trong phiên Hermes).
+- **Trạng thái phiên 2026-08-09:** ✅ `cargo fmt` ✓, `cargo clippy -D warnings` ✓, `cargo test` 19/19 ✓, `cargo build --release` ✓, smoke test E2E ✓, commit `23ee603` ✓.
+- **Toolchain Windows:** GNU build cần `w64devkit` (`C:\tools\w64devkit\bin` trong PATH) + `CARGO_TARGET_DIR` ngoài OneDrive; symlink `libgcc_eh.a → libgcc.a` đã fix.
+- **Ghi chú API:** param structs dùng `#[serde(rename_all = "camelCase")]`; `scan()` trả `summary.scanId` (không phải top-level).
 
 ## Hướng dẫn nhanh cho agent mới
 
