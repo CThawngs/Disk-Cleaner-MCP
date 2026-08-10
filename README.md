@@ -7,6 +7,8 @@ A **Rust-based MCP (Model Context Protocol) server** that gives AI agents — He
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue)
 ![Rust](https://img.shields.io/badge/Rust-1.95-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
+![Release](https://img.shields.io/github/v/release/CThawngs/Disk-Cleaner-MCP)
+![CI](https://img.shields.io/github/actions/workflow/status/CThawngs/Disk-Cleaner-MCP/ci.yml?label=CI)
 
 ---
 
@@ -40,6 +42,19 @@ A **Rust-based MCP (Model Context Protocol) server** that gives AI agents — He
 
 ## 🚀 Quick Start
 
+### ⬇️ Latest Release (v0.1.0)
+
+Pre-built binaries for all platforms — no Rust toolchain needed:
+
+| Platform | Binary | Size |
+|---|---|---|
+| Windows x64 | [disk-cleaner-mcp-x86_64-pc-windows-msvc.exe](https://github.com/CThawngs/Disk-Cleaner-MCP/releases/latest/download/disk-cleaner-mcp-x86_64-pc-windows-msvc.exe) | 3.8 MB |
+| Linux x64 | [disk-cleaner-mcp-x86_64-unknown-linux-gnu](https://github.com/CThawngs/Disk-Cleaner-MCP/releases/latest/download/disk-cleaner-mcp-x86_64-unknown-linux-gnu) | 3.6 MB |
+| macOS ARM (M-series) | [disk-cleaner-mcp-aarch64-apple-darwin](https://github.com/CThawngs/Disk-Cleaner-MCP/releases/latest/download/disk-cleaner-mcp-aarch64-apple-darwin) | 3.1 MB |
+
+> Doubt the safety? Read [docs/WORKFLOW.md](docs/WORKFLOW.md) first. All binaries are
+> built from source by GitHub Actions — no third-party, no telemetry, free 100%.
+
 ### Install (Windows)
 
 ```powershell
@@ -50,6 +65,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 ### Install (macOS/Linux)
 
 ```bash
+# One-liner — downloads the right binary for your arch + prints MCP config
 curl -fsSL https://github.com/CThawngs/Disk-Cleaner-MCP/releases/latest/download/install.sh | bash
 ```
 
@@ -209,6 +225,31 @@ Every change must pass: `cargo fmt --check` → `cargo clippy --all-targets -- -
 ├── smoke_test.py              # End-to-end JSON-RPC smoke test
 ├── demo_real.py               # Real-world cleanup demo (creates junk, cleans it)
 └── survey_real.py             # Read-only junk survey (measures reclaimable space)
+```
+
+---
+
+## 🤖 Works with AI Agents
+
+Any agent that speaks **MCP** can drive this server. Full agent-facing guide:
+**[docs/WORKFLOW.md](docs/WORKFLOW.md)**.
+
+| Agent | Config file | Entry |
+|---|---|---|
+| **Hermes** | `~/AppData/Local/hermes/config.yaml` | `mcp_servers: disk-cleaner: {command: ...}` |
+| **Claude Desktop** | `claude_desktop_config.json` | `mcpServers.disk-cleaner` |
+| **Cursor** | `.cursor/mcp.json` | `mcpServers.disk-cleaner` |
+| **OpenClaw** | `mcp.json` | `mcpServers.disk-cleaner` |
+| **Codex / Antigravity** | MCP CLI | `codex mcp add disk-cleaner -- ...` |
+
+**Example agent turn:** *(Hermes-style)*
+```
+User: "Dọn rác temp giúp tôi"
+1. get_system_status → C: 5.7GB free
+2. scan("C:/Users/me/AppData/Local/Temp")
+3. analyze(scanId, category="temp") → 41 files, tokens attached
+4. delete(scanId, items=[...]) → trashed, vào Thùng rác
+5. "Đã dọn 1.2GB rác temp. Ổ C còn 6.8GB free."
 ```
 
 ---
