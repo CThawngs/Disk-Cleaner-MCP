@@ -81,6 +81,10 @@ Add to your MCP client config (e.g., Claude Desktop `claude_desktop_config.json`
 
 ## 🧹 Workflow
 
+> Full agent-facing guide: **[docs/WORKFLOW.md](docs/WORKFLOW.md)** — tool-by-tool
+> JSON examples, 13-category classification table, safety model, and recommended
+> agent policy.
+
 ```
 1. get_system_status  →  See disk usage, user dirs
 2. scan               →  Scan a root path (e.g., Downloads), get scanId + summary
@@ -199,6 +203,7 @@ Every change must pass: `cargo fmt --check` → `cargo clippy --all-targets -- -
 │   ├── server.rs          # MCP tool handlers (7 tools)
 │   └── sysinfo_helper.rs  # Disk info, user dirs
 ├── .github/workflows/ci.yml   # CI: fmt + clippy + test + build on 3 OS
+├── docs/WORKFLOW.md           # Agent-facing workflow guide (JSON examples, categories, safety)
 ├── install.ps1                # Windows installer
 ├── install.sh                 # macOS/Linux installer
 ├── smoke_test.py              # End-to-end JSON-RPC smoke test
