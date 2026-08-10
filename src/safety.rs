@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 /// Absolute paths (case-insensitive on Windows) that must NEVER be deleted.
+#[cfg(windows)]
 const PROTECTED_WINDOWS: &[&str] = &[
     "C:\\Windows",
     "C:\\Program Files",
@@ -20,6 +21,7 @@ const PROTECTED_WINDOWS: &[&str] = &[
     "C:\\Documents and Settings",
 ];
 
+#[cfg(windows)]
 const PROTECTED_FILES_WINDOWS: &[&str] = &[
     "pagefile.sys",
     "hiberfil.sys",

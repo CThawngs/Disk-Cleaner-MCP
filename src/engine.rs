@@ -726,18 +726,19 @@ mod tests {
             .find(|e| e.path.ends_with("test.log"))
             .unwrap();
 
-        // Try to delete with valid token (should work — it's just temp)
+        // Try to delete with valid token — use PERMANENT delete so the test
+        // doesn't depend on trash support (Linux CI has no gio/trash).
         let del_req = DeleteRequest {
             scan_id: result.summary.scan_id.clone(),
             items: vec![DeleteItemRequest {
                 approval_token: entry.approval_token.clone(),
                 path: entry.path.clone(),
             }],
-            permanent: false,
-            confirm_permanent: false,
+            permanent: true,
+            confirm_permanent: true,
         };
         let del_result = engine.delete(&del_req);
-        assert_eq!(del_result.trashed, 1);
+        assert_eq!(del_result.permanent, 1);
 
         // Clean up
         let _ = std::fs::remove_dir_all(&temp);
