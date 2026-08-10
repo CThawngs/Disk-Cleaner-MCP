@@ -38,7 +38,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: disk-cleaner-mcp-${{ matrix.target }}
+          name: disk-cleaner-mcp-${{ matrix.target }}${{ matrix.ext }}
           path: target/${{ matrix.target }}/release/disk-cleaner-mcp${{ matrix.ext }}
 
   publish:
