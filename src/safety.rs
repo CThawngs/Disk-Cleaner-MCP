@@ -198,18 +198,21 @@ pub mod hex {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     #[test]
     fn test_protected_windows_system32() {
         let p = Path::new("C:\\Windows\\System32\\drivers");
         assert!(is_protected(p));
     }
 
+    #[cfg(windows)]
     #[test]
     fn test_protected_program_files() {
         let p = Path::new("C:\\Program Files\\SomeApp");
         assert!(is_protected(p));
     }
 
+    #[cfg(windows)]
     #[test]
     fn test_protected_pagefile() {
         let p = Path::new("C:\\pagefile.sys");
