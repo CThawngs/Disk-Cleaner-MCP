@@ -2,10 +2,10 @@
 name = "disk-cleaner-mcp"
 version = "0.1.0"
 edition = "2021"
-authors = ["Zero News <techgrowthvietnam@gmail.com>"]
+authors = ["Zero <nguyenchithang2804@gmail.com>"]
 license = "MIT"
 description = "Rust MCP server: fast safe disk cleanup for AI agents (Windows/macOS/Linux)"
-repository = "https://github.com/zenews/disk-cleaner-mcp"
+repository = "https://github.com/CThawngs/Disk-Cleaner-MCP"
 keywords = ["mcp", "disk", "cleanup", "rust", "ai-agent"]
 categories = ["filesystem", "development-tools"]
 
