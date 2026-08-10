@@ -35,11 +35,15 @@ jobs:
           key: ${{ matrix.target }}
       - name: Build release
         run: cargo build --release --target ${{ matrix.target }}
+      - name: Rename binary with target suffix
+        run: |
+          mv target/${{ matrix.target }}/release/disk-cleaner-mcp${{ matrix.ext }} \
+             target/${{ matrix.target }}/release/disk-cleaner-mcp-${{ matrix.target }}${{ matrix.ext }}
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: disk-cleaner-mcp-${{ matrix.target }}${{ matrix.ext }}
-          path: target/${{ matrix.target }}/release/disk-cleaner-mcp${{ matrix.ext }}
+          name: disk-cleaner-mcp-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/disk-cleaner-mcp-${{ matrix.target }}${{ matrix.ext }}
 
   publish:
     needs: release
