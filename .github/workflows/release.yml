@@ -36,6 +36,7 @@ jobs:
       - name: Build release
         run: cargo build --release --target ${{ matrix.target }}
       - name: Rename binary with target suffix
+        shell: bash
         run: |
           mv target/${{ matrix.target }}/release/disk-cleaner-mcp${{ matrix.ext }} \
              target/${{ matrix.target }}/release/disk-cleaner-mcp-${{ matrix.target }}${{ matrix.ext }}
