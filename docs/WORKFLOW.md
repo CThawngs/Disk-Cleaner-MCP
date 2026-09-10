@@ -1,7 +1,7 @@
 # Disk-Cleaner-MCP — Workflow Guide
 
 > **For AI agents** (Hermes, Claude, Cursor, OpenClaw, Codex, Antigravity) and humans.
-> This document explains how to drive the 7 MCP tools safely and effectively.
+> This document explains how to drive the 11 MCP tools safely and effectively.
 
 ---
 
@@ -18,8 +18,8 @@ that every destructive action is:
 
 ```
 ┌──────────┐   ┌──────────┐   ┌────────────┐   ┌───────────┐   ┌──────────┐
-│  1. Scan │ → │ 2.Analyze│ → │ 3. Organize│ → │ 4. Delete │ → │ 5. Report│
-│ (read)   │   │ (read)   │   │ (optional) │   │ (trash)   │   │ (read)   │
+│  1. Scan │ → │ 2.Insight│ → │ 3. Organize│ → │ 4. Delete │ → │ 5. Report│
+│ (read)   │   │ tree/dup │   │ (optional) │   │ (trash)   │   │ (read)   │
 └──────────┘   └──────────┘   └────────────┘   └───────────┘   └──────────┘
 ```
 
@@ -92,6 +92,123 @@ Filter the scanned entries (category, size, age, glob, extension) and receive
   "total": 3
 }
 ```
+
+### Step 3b — TreeSize-grade insights (all read-only)
+
+Four tools, modeled on [TreeSize](https://www.jam-software.com/treesize), give the
+agent the same analytical depth the desktop app gives humans — over the entries
+already cached from `scan` (no re-walk except content hashing in `find_duplicates`).
+
+#### `get_tree` — where did the space go?
+
+Recursive folder sizes, TreeSize "folder view":
+
+```json
+{"method": "tools/call", "params": {
+  "name": "get_tree",
+  "arguments": {"scanId": "a1b2c3...", "top": 10}
+}}
+```
+
+```json
+{
+  "name": "Downloads",
+  "size": 53687091200,        // this folder + ALL descendants
+  "files": 4821,
+  "directSize": 1048576,
+  "percent": 100.0,
+  "children": [
+    {"name": "isos", "size": 41231686041, "percent": 76.8, "...": "..."},
+    {"name": "(+14 more)", "size": 12455284728, "percent": 23.2}
+  ],
+  "childrenTruncated": true
+}
+```
+
+> Truncated children are folded into a `(+N more)` rollup so totals stay exact.
+> Drill down by scanning the biggest subfolder, then call `get_tree` again.
+
+#### `file_types` — what type of file is eating space?
+
+```json
+{"method": "tools/call", "params": {
+  "name": "file_types",
+  "arguments": {"scanId": "a1b2c3...", "limit": 30}
+}}
+```
+
+```json
+{
+  "totalFiles": 4821,
+  "totalSize": 53687091200,
+  "extensionCount": 87,
+  "byExtension": [
+    {"extension": "iso", "count": 3, "size": 38654705664},
+    {"extension": "mp4", "count": 41, "size": 12884901888},
+    {"extension": "log", "count": 1204, "size": 734003200}
+  ]
+}
+```
+
+#### `find_duplicates` — byte-identical copies (TreeSize Personal/Pro feature)
+
+Cheap size prefilter → parallel streaming SHA-256 only over same-size files.
+Files >4 GB are skipped (bounded I/O). Every returned file carries its
+`approvalToken`, so deleting redundant copies flows through the normal safety path.
+
+```json
+{"method": "tools/call", "params": {
+  "name": "find_duplicates",
+  "arguments": {"scanId": "a1b2c3...", "minSize": 1048576, "top": 50}
+}}
+```
+
+```json
+{
+  "groupsFound": 2,
+  "totalWasted": 3221225472,
+  "topGroups": [
+    {
+      "size": 2147483648,
+      "fileCount": 2,
+      "wastedSize": 2147483648,
+      "files": [
+        {"path": ".../backup-old.iso", "modified": 1690000000, "approvalToken": "9f86..."},
+        {"path": ".../backup-old (1).iso", "modified": 1690000500, "approvalToken": "c2b5..."}
+      ]
+    }
+  ]
+}
+```
+
+> ⚠️ **Never delete all copies** — `files` is oldest-first; keep `files[0]`,
+> delete the rest (they are exact byte-identical twins, verified by hash).
+
+#### `compare_scans` — TreeSize "compare over time"
+
+Diff two scans of the same tree (both scans must still be cached — the engine
+keeps the 3 most recent):
+
+```json
+{"method": "tools/call", "params": {
+  "name": "compare_scans",
+  "arguments": {"scanIdA": "scan-before", "scanIdB": "scan-after", "top": 50}
+}}
+```
+
+```json
+{
+  "totalA": 53687091200, "totalB": 51539607552,
+  "netDelta": -2147483648,          // negative = space freed
+  "addedCount": 3, "addedSize": 52428800,
+  "removedCount": 1, "removedSize": 2200341504,
+  "changedCount": 2,
+  "topRemoved": [{"path": ".../old-setup.exe", "before": 2200341504, "after": 0, "delta": -2200341504}]
+}
+```
+
+Use it to verify a cleanup actually freed what it claimed, or to show the user
+what changed since last week.
 
 ### Step 4 (optional) — `organize`
 Sort files into a categorized destination tree. **Always dry-run first.**
@@ -210,10 +327,15 @@ Unix: `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/boot`, `/etc`, `/var`,
 1. **Start with `get_system_status`** — know the disk before acting.
 2. **Scan a narrow root** (e.g. `%TEMP%`, `Downloads`) — never the whole drive
    in one go.
-3. **Analyze with filters** — pick `category=temp` etc., sort by size desc.
-4. **Organize with `dryRun:true` first** — show the planned tree to the user.
-5. **Delete green-category files only** — with `permanent:false`.
-6. **Summarize the outcome** — bytes freed, files trashed, any errors.
+3. **Look before you list** — run `get_tree` (biggest folders) and `file_types`
+   (biggest types) first; drill into the hotspot instead of paging blindly.
+4. **Check `find_duplicates`** before proposing deletions — exact-copy groups are
+   the safest big wins (keep one, trash the rest).
+5. **Analyze with filters** — pick `category=temp` etc., sort by size desc.
+6. **Organize with `dryRun:true` first** — show the planned tree to the user.
+7. **Delete green-category files only** — with `permanent:false`.
+8. **Verify with `compare_scans`** — rescan after cleanup and show the net delta.
+9. **Summarize the outcome** — bytes freed, files trashed, any errors.
 
 ### Example agent turn (Hermes-style)
 

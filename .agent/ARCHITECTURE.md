@@ -46,8 +46,29 @@
 | `engine.rs` | ScanEngine: walk + stat + token + cache |
 | `safety.rs` | SecurityGuard: blocklist, normalize, verify token, protected check |
 | `analytics.rs` | Lọc/sort/phân trang/glob/insights/report markdown |
+| `insights.rs` | TreeSize-grade analytics: folder tree, file types, duplicate finder, scan diff |
 | `dirs.rs` | System status, standard dirs per OS |
 | `model.rs` | Các struct serde (ScanEntry, ScanSummary…) |
+
+### Insights (TreeSize-grade, v0.2 — src/insights.rs)
+- `get_tree`: roll size mỗi file lên toàn bộ ancestor → node giữ recursive size; children sort size desc, truncate `top` + rollup "(+N more)" giữ tổng chính xác.
+- `file_types`: group extension → (count, size), sort size desc.
+- `find_duplicates`: prefilter theo size (không đọc đĩa) → hash song song (rayon) CHỈ file cùng size → group theo (size, sha256). Bỏ qua file >4GB (cap I/O) + protected. Mỗi file trả kèm approvalToken → AI xóa bản thừa qua luồng delete an toàn. `files` oldest-first.
+- `compare_scans`: build snapshot in-memory từ 2 session sống (LRU 3), diff theo path: added/removed/changed + netDelta. KHÔNG persist đĩa (quét lại nếu session bị evict).
+- Tất cả read-only, không cần token, không sửa Safety Guard.
+
+## 3b. Data model insights (JSON, camelCase)
+
+```jsonc
+TreeNode        { name, path, size (recursive), files, directSize, directFiles, percent, children[], childrenTruncated }
+ExtensionStat   { extension, count, size }
+FileTypeReport  { scanId, totalFiles, totalSize, extensionCount, byExtension[], truncated }
+DuplicateFile   { path, size, modified, category, categoryLabel, approvalToken }
+DuplicateGroup  { hash, size, fileCount, wastedSize, files[] (oldest-first) }
+DuplicateReport { scanId, groupsFound, topGroups[], totalWasted, candidateFiles, hashedFiles, unreadableFiles, truncated }
+FileChange      { path, before, after, delta }
+CompareReport   { scanA, scanB, rootA, rootB, totalA, totalB, netDelta, addedCount/Size, removedCount/Size, changedCount, topAdded[], topRemoved[], topChanged[], warnings[] }
+```
 
 ## 4. Data model (JSON, camelCase)
 
@@ -68,6 +89,8 @@ Category keys: `temp`, `log`, `cache`, `browser_cache`, `node_cache`, `python_ca
 
 ## 6. Limitation / Hướng mở rộng
 
+- `find_duplicates` bỏ qua file >4GB (cap I/O) — nâng cấp: partial/chunked hashing.
+- `compare_scans` chỉ so 2 scan còn sống trong RAM (LRU 3) — nâng cấp: persist snapshot ra đĩa (TreeSize Professional có DB lịch sử).
 - Không hỗ trợ mac/Linux delete test tự động trên CI Windows (cross-check thủ công).
-- `empty_trash`, `custom rules`, chunked streaming scan (quá 1M entry) — để v0.2.
+- `empty_trash`, `custom rules`, chunked streaming scan (quá 1M entry) — để v0.3.
 - Cửa mở: `--token`, `--canary`?

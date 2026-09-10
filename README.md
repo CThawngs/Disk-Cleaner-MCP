@@ -14,13 +14,17 @@ A **Rust-based MCP (Model Context Protocol) server** that gives AI agents — He
 
 ## ✨ Features
 
-- **7 MCP tools**:
+- **11 MCP tools**:
   | Tool | Description |
   |---|---|
   | `get_system_status` | Disk usage, user directories, platform info |
   | `list_categories` | All junk categories + descriptions |
   | `scan` | Scan a root path, returns `scanId` + summary |
   | `analyze` | Filter/page entries (category, size, age, sort), returns approval tokens |
+  | `get_tree` | **TreeSize-style folder tree** — recursive size per folder ("where did the space go?") |
+  | `file_types` | **TreeSize-style file-type breakdown** — size/count per extension |
+  | `find_duplicates` | **TreeSize-style duplicate finder** — size prefilter + SHA-256, returns deletion tokens |
+  | `compare_scans` | **TreeSize-style diff** — what changed between two scans (added/removed/grown, net delta) |
   | `organize` | **Sort files into a destination tree by category or extension** (dry-run supported, never overwrites) |
   | `delete` | Move files to trash / permanent (requires double confirmation) |
   | `get_report` | Markdown report of a scan |
@@ -104,9 +108,11 @@ Add to your MCP client config (e.g., Claude Desktop `claude_desktop_config.json`
 ```
 1. get_system_status  →  See disk usage, user dirs
 2. scan               →  Scan a root path (e.g., Downloads), get scanId + summary
-3. analyze            →  Filter entries (category, size, age), get approval tokens
-4. organize (optional) → Sort files into category/extension subfolders (dry-run first!)
-5. delete             →  Delete with approval tokens (trash by default)
+3. get_tree/file_types/find_duplicates → See WHERE and WHAT is eating space, find exact copies
+4. analyze            →  Filter entries (category, size, age), get approval tokens
+5. organize (optional) → Sort files into category/extension subfolders (dry-run first!)
+6. delete             →  Delete with approval tokens (trash by default)
+7. compare_scans      →  Verify: rescan + diff to show the net delta
 ```
 
 ### Example: Clean old downloads
@@ -185,7 +191,7 @@ Add to your MCP client config (e.g., Claude Desktop `claude_desktop_config.json`
 # Check
 cargo check
 
-# Test (24 unit tests)
+# Test (29 unit tests)
 cargo test
 
 # Lint (zero warnings required)
@@ -216,7 +222,8 @@ Every change must pass: `cargo fmt --check` → `cargo clippy --all-targets -- -
 │   ├── safety.rs          # Safety Guard: blocklist, tokens, path normalization
 │   ├── engine.rs          # Scan/analyze/organize/delete engines
 │   ├── analytics.rs       # 13 junk categories + report generator
-│   ├── server.rs          # MCP tool handlers (7 tools)
+│   ├── insights.rs        # TreeSize-grade analytics: tree, file types, duplicates, compare
+│   ├── server.rs          # MCP tool handlers (11 tools)
 │   └── sysinfo_helper.rs  # Disk info, user dirs
 ├── .github/workflows/ci.yml   # CI: fmt + clippy + test + build on 3 OS
 ├── docs/WORKFLOW.md           # Agent-facing workflow guide (JSON examples, categories, safety)

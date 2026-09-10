@@ -2,6 +2,7 @@
 
 use crate::analytics;
 use crate::engine::ScanEngine;
+use crate::insights;
 use crate::model::*;
 use crate::sysinfo_helper;
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
@@ -184,6 +185,102 @@ impl DiskCleanerServer {
             ),
         }
     }
+
+    // ── TreeSize-grade insights (all read-only, operate on cached scan entries) ──
+
+    /// TreeSize-style recursive folder tree.
+    #[tool(
+        name = "get_tree",
+        description = "TreeSize-style aggregated folder tree: every folder with its RECURSIVE size (this folder + all descendants), file counts, and share of the scan root. Use it to answer 'where did the space go' before picking files. Requires scanId from scan(). Read-only.\n\nParameters:\n- scanId: from scan()\n- top: max children per folder (default 10). Truncated folders are folded into a '(+N more)' rollup so totals stay exact."
+    )]
+    async fn get_tree(&self, Parameters(params): Parameters<TreeParams>) -> String {
+        let engine = self.engine.lock().unwrap();
+        match engine.get_session(&params.scan_id) {
+            Some(session) => {
+                let tree = insights::build_tree(
+                    &session.entries,
+                    &session.summary.root,
+                    params.top.unwrap_or(10).clamp(1, 50),
+                );
+                serde_json::to_string_pretty(&tree).unwrap_or_else(|e| format!("Error: {}", e))
+            }
+            None => scan_not_found(&params.scan_id),
+        }
+    }
+
+    /// Per-extension size breakdown.
+    #[tool(
+        name = "file_types",
+        description = "TreeSize-style file-type breakdown: total size and count per file extension, largest first. Shows WHAT is eating space (videos, archives, logs...). Requires scanId from scan(). Read-only.\n\nParameters:\n- scanId: from scan()\n- limit: max extensions returned (default 30) sorted by size desc."
+    )]
+    async fn file_types(&self, Parameters(params): Parameters<FileTypesParams>) -> String {
+        let engine = self.engine.lock().unwrap();
+        match engine.get_session(&params.scan_id) {
+            Some(session) => {
+                let report = insights::file_types(
+                    &session.entries,
+                    &params.scan_id,
+                    params.limit.unwrap_or(30).clamp(1, 200),
+                );
+                serde_json::to_string_pretty(&report).unwrap_or_else(|e| format!("Error: {}", e))
+            }
+            None => scan_not_found(&params.scan_id),
+        }
+    }
+
+    /// Content-hash duplicate finder with safe-delete tokens.
+    #[tool(
+        name = "find_duplicates",
+        description = "TreeSize-style duplicate file finder: groups files with byte-identical content (same size + SHA-256), reports wasted bytes, and returns each copy's approvalToken so you can delete redundant copies via delete(). Content is only read for files that share a size with another file.\n\nParameters:\n- scanId: from scan()\n- minSize: minimum file size in bytes to consider (default 1048576 = 1 MiB; use 0 to include small files)\n- top: max groups returned (default 50), sorted by wasted bytes desc.\n\nSafety: never delete ALL copies — keep at least one (files are oldest-first; files[0] is usually the original)."
+    )]
+    async fn find_duplicates(&self, Parameters(params): Parameters<DuplicateParams>) -> String {
+        let engine = self.engine.lock().unwrap();
+        match engine.get_session(&params.scan_id) {
+            Some(session) => {
+                let min_size = params.min_size.unwrap_or(1_048_576);
+                let report = insights::find_duplicates(
+                    &session.entries,
+                    &params.scan_id,
+                    min_size,
+                    params.top.unwrap_or(50).clamp(1, 200),
+                );
+                serde_json::to_string_pretty(&report).unwrap_or_else(|e| format!("Error: {}", e))
+            }
+            None => scan_not_found(&params.scan_id),
+        }
+    }
+
+    /// Diff two scans (TreeSize "compare over time").
+    #[tool(
+        name = "compare_scans",
+        description = "TreeSize-style 'compare over time': diff two scans of the same tree and see what changed — files added, removed, and size changes, plus net delta (negative = space freed). Requires TWO live scanIds from scan() (scans are cached in RAM, max 3 — re-scan both roots if a session was evicted).\n\nParameters:\n- scanIdA: earlier scan\n- scanIdB: later scan\n- top: max rows per section (default 50)."
+    )]
+    async fn compare_scans(&self, Parameters(params): Parameters<CompareParams>) -> String {
+        let engine = self.engine.lock().unwrap();
+        let (sa, sb) = match (
+            engine.get_session(&params.scan_id_a),
+            engine.get_session(&params.scan_id_b),
+        ) {
+            (Some(a), Some(b)) => (a, b),
+            (missing_a, missing_b) => {
+                let missing = [
+                    ("A", &params.scan_id_a, missing_a.is_none()),
+                    ("B", &params.scan_id_b, missing_b.is_none()),
+                ]
+                .into_iter()
+                .filter(|(_, _, m)| *m)
+                .map(|(slot, id, _)| format!("{} ('{}')", slot, id))
+                .collect::<Vec<_>>()
+                .join(" and ");
+                return scan_not_found(&missing);
+            }
+        };
+        let snap_a = insights::build_snapshot(&sa.summary, &sa.entries);
+        let snap_b = insights::build_snapshot(&sb.summary, &sb.entries);
+        let report =
+            insights::compare_snapshots(&snap_a, &snap_b, params.top.unwrap_or(50).clamp(1, 200));
+        serde_json::to_string_pretty(&report).unwrap_or_else(|e| format!("Error: {}", e))
+    }
 }
 
 #[tool_handler]
@@ -196,7 +293,9 @@ impl ServerHandler for DiskCleanerServer {
             ))
             .with_instructions(
                 "Disk Cleaner MCP Server. Scan, analyze, and safely delete junk files.\n\
-                 Workflow: get_system_status → scan → analyze → (review) → delete\n\
+                 Workflow: get_system_status → scan → get_tree/file_types/find_duplicates/analyze → (review) → delete\n\
+                 Insights: get_tree shows which folders hold the space; file_types shows which file types;\n\
+                 find_duplicates reports byte-identical copies with deletion tokens; compare_scans diffs two scans.\n\
                  Safety: System files are protected. Default delete = trash (recoverable).",
             )
     }
@@ -291,4 +390,60 @@ pub struct OrganizeParams {
 pub struct ReportParams {
     #[schemars(description = "Scan ID from scan()")]
     pub scan_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TreeParams {
+    #[schemars(description = "Scan ID from scan()")]
+    pub scan_id: String,
+    #[schemars(description = "Max child folders shown per node (default 10, max 50)")]
+    #[serde(default)]
+    pub top: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FileTypesParams {
+    #[schemars(description = "Scan ID from scan()")]
+    pub scan_id: String,
+    #[schemars(description = "Max extensions returned, largest first (default 30, max 200)")]
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateParams {
+    #[schemars(description = "Scan ID from scan()")]
+    pub scan_id: String,
+    #[schemars(
+        description = "Only files >= this many bytes are considered (default 1048576 = 1 MiB; 0 = all)"
+    )]
+    #[serde(default)]
+    pub min_size: Option<u64>,
+    #[schemars(description = "Max duplicate groups returned (default 50, max 200)")]
+    #[serde(default)]
+    pub top: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareParams {
+    #[schemars(description = "Earlier scan ID")]
+    pub scan_id_a: String,
+    #[schemars(description = "Later scan ID")]
+    pub scan_id_b: String,
+    #[schemars(description = "Max rows per added/removed/changed section (default 50)")]
+    #[serde(default)]
+    pub top: Option<usize>,
+}
+
+/// Shared error payload when a scan session is missing/evicted.
+fn scan_not_found(id: &str) -> String {
+    let err = serde_json::json!({
+        "error": true,
+        "message": format!("Scan '{}' not found. Run scan first (only the 3 most recent scans stay cached).", id),
+    });
+    serde_json::to_string_pretty(&err).unwrap_or_else(|_| "Error".into())
 }

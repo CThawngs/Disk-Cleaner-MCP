@@ -89,6 +89,15 @@ def main():
         f.write("x" * 1000)
     with open(os.path.join(tmp, "junk2.tmp"), "w") as f:
         f.write("y" * 500)
+    with open(os.path.join(tmp, "sub", "deep.log"), "w") as f:
+        f.write("z" * 300)
+    # duplicate pair + unique file for the TreeSize-insights checks below
+    with open(os.path.join(tmp, "dup_a.bin"), "wb") as f:
+        f.write(b"IDENTICAL-CONTENT-1234567890" * 10)
+    with open(os.path.join(tmp, "dup_b.bin"), "wb") as f:
+        f.write(b"IDENTICAL-CONTENT-1234567890" * 10)
+    with open(os.path.join(tmp, "solo.bin"), "wb") as f:
+        f.write(b"UNIQUE-BYTES-9999" * 10)
 
     resp = srv.request("tools/call", {"name": "scan", "arguments": {"root": tmp}})
     check_ok(resp, "scan")
@@ -109,6 +118,34 @@ def main():
     token = tok_entry["approvalToken"]
     del_path = tok_entry["path"]
     print(f"  ✤ token entry: {os.path.basename(del_path)}")
+
+    # 5a. TreeSize insights: get_tree / file_types / find_duplicates
+    resp = srv.request("tools/call", {"name": "get_tree", "arguments": {"scanId": scan_id}})
+    check_ok(resp, "get_tree")
+    tree = json.loads(resp["result"]["content"][0]["text"])
+    assert tree["size"] > 0, f"tree root size must be > 0: {tree}"
+    assert tree["children"], "tree root must have children"
+    print(f"  ✤ tree: root={tree['size']}B children={len(tree['children'])}")
+
+    resp = srv.request("tools/call", {"name": "file_types", "arguments": {"scanId": scan_id}})
+    check_ok(resp, "file_types")
+    ft = json.loads(resp["result"]["content"][0]["text"])
+    exts = {e["extension"] for e in ft["byExtension"]}
+    assert {"log", "tmp", "bin"} <= exts, f"expected log/tmp/bin extensions, got {exts}"
+    print(f"  ✤ file_types: {ft['extensionCount']} extensions, {ft['totalSize']}B")
+
+    resp = srv.request("tools/call", {
+        "name": "find_duplicates",
+        "arguments": {"scanId": scan_id, "minSize": 0},
+    })
+    check_ok(resp, "find_duplicates")
+    dups = json.loads(resp["result"]["content"][0]["text"])
+    assert dups["groupsFound"] >= 1, f"expected >=1 duplicate group: {dups}"
+    group = dups["topGroups"][0]
+    assert group["fileCount"] == 2, f"expected 2 identical files: {group}"
+    assert group["files"][0]["approvalToken"], "duplicate files must carry approvalToken"
+    assert dups["totalWasted"] == group["size"], "wasted = one copy of the pair"
+    print(f"  ✤ find_duplicates: {dups['groupsFound']} group(s), wasted={dups['totalWasted']}B")
 
     # 5b. organize test: dry-run first (nothing moves)
     organized_dir = os.path.join(tmp, "organized")
@@ -168,6 +205,22 @@ def main():
     rejected = outcome.get("rejected", 0)
     assert rejected >= 1, f"expected token rejection, got: {outcome}"
     print("  ✓ token rejection verified")
+
+    # 7b. rescan + compare_scans: junk1.log was trashed above → removed
+    resp = srv.request("tools/call", {"name": "scan", "arguments": {"root": tmp}})
+    check_ok(resp, "scan (second, for compare)")
+    scan2 = json.loads(resp["result"]["content"][0]["text"])
+    scan_id2 = scan2["summary"]["scanId"]
+
+    resp = srv.request("tools/call", {
+        "name": "compare_scans",
+        "arguments": {"scanIdA": scan_id, "scanIdB": scan_id2},
+    })
+    check_ok(resp, "compare_scans")
+    diff = json.loads(resp["result"]["content"][0]["text"])
+    assert diff["removedCount"] >= 1, f"expected >=1 removed file: {diff}"
+    assert diff["netDelta"] < 0, f"net delta must be negative after cleanup: {diff}"
+    print(f"  ✤ compare_scans: net={diff['netDelta']}B removed={diff['removedCount']}")
 
     # 8. cleanup temp dir
     import shutil

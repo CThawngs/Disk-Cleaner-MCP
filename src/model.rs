@@ -211,4 +211,148 @@ pub struct CategoryInfo {
     pub description: String,
 }
 
+// ── TreeSize-grade insights (tree / file types / duplicates / compare) ──
+
+/// One node of the aggregated folder tree (TreeSize "folder view").
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TreeNode {
+    pub name: String,
+    pub path: String,
+    /// Recursive size: this folder + all descendants (bytes).
+    pub size: u64,
+    /// Recursive file count.
+    pub files: u64,
+    /// Size of files DIRECTLY in this folder (not descendants).
+    pub direct_size: u64,
+    /// Files DIRECTLY in this folder.
+    pub direct_files: u64,
+    /// Share of the subtree root's size (0-100).
+    pub percent: f64,
+    /// Children sorted by size desc, truncated to `top` with a "(+N more)" rollup.
+    pub children: Vec<TreeNode>,
+    /// True when children list was truncated (rollup node keeps totals exact).
+    pub children_truncated: bool,
+}
+
+/// Aggregated stats for one file extension (TreeSize "file types" view).
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionStat {
+    /// Extension without dot, or "(none)" for files without one.
+    pub extension: String,
+    pub count: u64,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FileTypeReport {
+    pub scan_id: String,
+    pub total_files: u64,
+    pub total_size: u64,
+    pub extension_count: usize,
+    pub by_extension: Vec<ExtensionStat>,
+    pub truncated: bool,
+}
+
+/// One file inside a duplicate group (approval token included so the AI can
+/// immediately `delete` redundant copies through the normal safety flow).
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateFile {
+    pub path: String,
+    pub size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modified: Option<i64>,
+    pub category: String,
+    pub category_label: String,
+    pub approval_token: String,
+}
+
+/// A group of ≥2 files with identical content (same size + same SHA-256).
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateGroup {
+    pub hash: String,
+    pub size: u64,
+    pub file_count: u64,
+    /// Bytes reclaimable by deleting all but one copy: size * (count - 1).
+    pub wasted_size: u64,
+    /// Oldest-first; typically the first entry is the "original" to keep.
+    pub files: Vec<DuplicateFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateReport {
+    pub scan_id: String,
+    pub groups_found: u64,
+    pub top_groups: Vec<DuplicateGroup>,
+    /// Bytes reclaimable across ALL found groups (not just returned page).
+    pub total_wasted: u64,
+    pub candidate_files: u64,
+    pub hashed_files: u64,
+    pub unreadable_files: u64,
+    pub truncated: bool,
+}
+
+/// One changed file between two scans.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FileChange {
+    pub path: String,
+    pub before: u64,
+    pub after: u64,
+    pub delta: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareReport {
+    pub scan_a: String,
+    pub scan_b: String,
+    pub root_a: String,
+    pub root_b: String,
+    pub started_a: i64,
+    pub started_b: i64,
+    pub total_a: u64,
+    pub total_b: u64,
+    /// total_b - total_a (negative = space freed).
+    pub net_delta: i64,
+    pub added_count: u64,
+    pub added_size: u64,
+    pub removed_count: u64,
+    pub removed_size: u64,
+    pub changed_count: u64,
+    pub top_added: Vec<FileChange>,
+    pub top_removed: Vec<FileChange>,
+    pub top_changed: Vec<FileChange>,
+    pub warnings: Vec<String>,
+}
+
+/// In-memory snapshot of a scan's file set, built on demand from a live scan
+/// session. `compare_scans` diffs two of these (TreeSize "compare over time").
+/// No disk persistence: only scans still cached (LRU 3) can be compared.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanSnapshot {
+    pub scan_id: String,
+    pub root: String,
+    pub started_at: i64,
+    pub total_size: u64,
+    pub files_scanned: u64,
+    /// path → {size, modified} for every file.
+    #[serde(rename = "m")]
+    pub map: BTreeMap<String, FileSnap>,
+}
+
+/// Compact per-file snapshot record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileSnap {
+    #[serde(rename = "s")]
+    pub size: u64,
+    #[serde(rename = "m", skip_serializing_if = "Option::is_none")]
+    pub modified: Option<i64>,
+}
+
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
