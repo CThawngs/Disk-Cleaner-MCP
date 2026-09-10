@@ -2,7 +2,7 @@
 
 ## Thông tin Chủ dự án
 
-- **Chủ dự án:** (chưa khai — cần GitHub username để đánh được install script, xem GAP-1)
+- **Chủ dự án:** Zero — nguyenchithang2804@gmail.com — GitHub: **CThawngs**.
 - **Vai trò:** end-user, vibe-code 100%; AI tự vận hành kỹ thuật.
 
 ## Yêu cầu sản phẩm (đã chốt)
@@ -11,20 +11,21 @@
 2. Tầng 1 Rust: quét siêu tốc, metadata nhẹ, cấp token. Tầng 2 LLM: suy luận ngữ cảnh + đề xuất.
 3. Safety: chặn tuyệt đối hệ thống; `trash` mặc định; xóa phải có `approval_token`.
 4. Phân phối: GitHub public + GitHub Actions cross-compile + install.ps1/install.sh.
+5. (v0.2) Phân tích sâu kiểu TreeSize cho AI: cây thư mục, loại file, duplicate, so sánh 2 lần quét — native Rust, không phụ thuộc app bên thứ ba (xem ADR-010).
 
 ## Quyết định mặc định (Chủ đồng ý ngầm — có thể đổi bất cứ lúc nào)
 
 - Ngôn ngữ giao diện tool: tiếng Anh (vì MCP schema fake JSON-RPC); nhãn category song ngữ VL/EN.
-- Dutch: quét root mặc định = `temp` + `cache` + `downloads` được ghép khi AI gọi scan với root chỉ định.
+- `scan` bỏ trống `root` → mặc định quét thư mục **Downloads** của user (hành vi đã cài trong `server.rs`).
 - Không tự ý xóa gì khi chưa có lệnh; AI đề xuất, chủ duyệt.
 
-## Môi trường (đã scan)
+## Môi trường (đã scan, cập nhật 2026-09-10)
 
-- OS: Windows 10/11 (git-bash MSYS), Rust 1.95 stable (gnu active, msvc có).
-- Cargo ở `~/.cargo/bin` (không trong PATH bash).
-- OneDrive: thư mục dự án đang được đồng bộ → `CARGO_TARGET_DIR` ngoài OneDrive.
+- OS: Windows 10/11, Rust 1.95 stable; rustup default = `msvc` nhưng máy thiếu `link.exe` → build bằng `cargo +stable-x86_64-pc-windows-gnu` + w64devkit trong PATH.
+- Cargo ở `~/.cargo/bin`; smoke test dùng `py` launcher (python không có trong PATH) + `PYTHONIOENCODING=utf-8`.
+- OneDrive: thư mục dự án đang được đồng bộ → `CARGO_TARGET_DIR` ngoài OneDrive (`~/.cargo/target/dc-mcp`).
 
-## Gaps (cần Chủ trả lời 1 lần)
+## Gaps — ĐÃ ĐÓNG TẤT CẢ (2026-09-10)
 
-- **GAP-1:** GitHub username/org để tạo release URL trong `install.ps1`/`install.sh` + README (mặc định đang là placeholder).
-- **GAP-2:** Có muốn tool `scan` mặc định quét tự động danh sách thư mục rác chuẩn (temp/cache/download) khi bỏ trống `root` không? (mặc định: có)
+- **GAP-1 (đóng):** GitHub username = `CThawngs` — đã dùng trong `Cargo.toml`, `install.ps1`, `install.sh`, README.
+- **GAP-2 (đóng):** `scan` không có `root` → quét Downloads (đơn giản, dự đoán được; ghép nhiều thư mục chuẩn để v0.3 nếu cần).

@@ -44,20 +44,30 @@ Scan a root path. Returns `scanId` + summary.
 }}
 ```
 
-**Response shape:**
+**Response shape** (the full entry list is NOT returned — use `analyze` to page through it):
 ```json
 {
   "summary": {
-    "scanId": "a1b2c3...",
-    "entriesCount": 200,
+    "scanId": "scan-1789057093-1900",
+    "startedAt": 1789057093,
+    "durationMs": 342,
+    "root": "C:/Users/me/Downloads",
+    "filesScanned": 200,
+    "dirsScanned": 18,
     "totalSize": 10415691776,
-    "durationMs": 342
+    "truncated": false,
+    "categoryTotals": [
+      {"category": "installer", "categoryLabel": "Installers", "count": 3, "size": 2147483648}
+    ],
+    "largestEntries": [ ...top 20 largest files... ],
+    "warnings": []
   },
-  "entries": [ ... ]   // full list when limit small
+  "entriesCount": 218,
+  "message": "Scan complete. 218 entries found. Use analyze with scanId to filter and page."
 }
 ```
 
-> ⚠️ `scanId` lives under `summary.scanId` — not top-level.
+> ⚠️ `scanId` lives under `summary.scanId` — not top-level. `entriesCount` IS top-level.
 
 ### Step 3 — `analyze`
 Filter the scanned entries (category, size, age, glob, extension) and receive
@@ -70,8 +80,9 @@ Filter the scanned entries (category, size, age, glob, extension) and receive
     "scanId": "a1b2c3...",
     "category": "installer",
     "minSize": 104857600,
-    "sort": "size",
-    "order": "desc",
+    "sortBy": "size",
+    "sortDesc": true,
+    "offset": 0,
     "limit": 100
   }
 }}
@@ -80,16 +91,20 @@ Filter the scanned entries (category, size, age, glob, extension) and receive
 **Response shape** (each entry carries its own token):
 ```json
 {
+  "scanId": "a1b2c3...",
   "page": [
     {
       "path": "C:/Users/me/Downloads/setup-v2.exe",
+      "kind": "file",
       "size": 2147483648,
       "category": "installer",
+      "categoryLabel": "Installers",
       "extension": "exe",
       "approvalToken": "9f86d081884c7d659a2feaa0c55ad015..."
     }
   ],
-  "total": 3
+  "total": 3,
+  "pageSize": 3
 }
 ```
 
