@@ -24,7 +24,12 @@ esac
 
 mkdir -p "$INSTALL_DIR"
 BIN="$INSTALL_DIR/disk-cleaner-mcp"
-URL="https://github.com/${OWNER}/${REPO}/releases/download/${VERSION}/disk-cleaner-mcp-${TARGET}"
+if [ "$VERSION" = "latest" ]; then
+  # /latest/download/ is a GitHub redirect that always points to the newest release
+  URL="https://github.com/${OWNER}/${REPO}/releases/latest/download/disk-cleaner-mcp-${TARGET}"
+else
+  URL="https://github.com/${OWNER}/${REPO}/releases/download/${VERSION}/disk-cleaner-mcp-${TARGET}"
+fi
 echo "Downloading $URL ..."
 curl -fsSL "$URL" -o "$BIN"
 chmod +x "$BIN"

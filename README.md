@@ -52,9 +52,9 @@ Pre-built binaries for all platforms — no Rust toolchain needed:
 
 | Platform | Binary | Size |
 |---|---|---|
-| Windows x64 | [disk-cleaner-mcp-x86_64-pc-windows-msvc.exe](https://github.com/CThawngs/Disk-Cleaner-MCP/releases/latest/download/disk-cleaner-mcp-x86_64-pc-windows-msvc.exe) | 3.8 MB |
-| Linux x64 | [disk-cleaner-mcp-x86_64-unknown-linux-gnu](https://github.com/CThawngs/Disk-Cleaner-MCP/releases/latest/download/disk-cleaner-mcp-x86_64-unknown-linux-gnu) | 3.6 MB |
-| macOS ARM (M-series) | [disk-cleaner-mcp-aarch64-apple-darwin](https://github.com/CThawngs/Disk-Cleaner-MCP/releases/latest/download/disk-cleaner-mcp-aarch64-apple-darwin) | 3.1 MB |
+| Windows x64 | [disk-cleaner-mcp-x86_64-pc-windows-msvc.exe](https://github.com/CThawngs/Disk-Cleaner-MCP/releases/latest/download/disk-cleaner-mcp-x86_64-pc-windows-msvc.exe) | 4.1 MB |
+| Linux x64 | [disk-cleaner-mcp-x86_64-unknown-linux-gnu](https://github.com/CThawngs/Disk-Cleaner-MCP/releases/latest/download/disk-cleaner-mcp-x86_64-unknown-linux-gnu) | 3.8 MB |
+| macOS ARM (M-series) | [disk-cleaner-mcp-aarch64-apple-darwin](https://github.com/CThawngs/Disk-Cleaner-MCP/releases/latest/download/disk-cleaner-mcp-aarch64-apple-darwin) | 3.2 MB |
 
 > Doubt the safety? Read [docs/WORKFLOW.md](docs/WORKFLOW.md) first. All binaries are
 > built from source by GitHub Actions — no third-party, no telemetry, free 100%.

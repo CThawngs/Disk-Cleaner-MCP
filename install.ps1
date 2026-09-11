@@ -18,14 +18,20 @@ New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 
 # 2. Download prebuilt binary from GitHub Releases
 if (-not $SkipBinary) {
-    $url = "https://github.com/CThawngs/Disk-Cleaner-MCP/releases/download/$Version/disk-cleaner-mcp-x86_64-pc-windows-msvc.exe"
+    $asset = "disk-cleaner-mcp-x86_64-pc-windows-msvc.exe"
+    if ($Version -eq "latest") {
+        # /latest/download/ is a GitHub redirect that always points to the newest release
+        $url = "https://github.com/CThawngs/Disk-Cleaner-MCP/releases/latest/download/$asset"
+    } else {
+        $url = "https://github.com/CThawngs/Disk-Cleaner-MCP/releases/download/$Version/$asset"
+    }
     Write-Host "Downloading $url ..."
-    Invoke-WebRequest -Uri $url -OutFile $Db
+    Invoke-WebRequest -Uri $url -OutFile $exe
 }
 
 # 3. Verify binary exists
-if (-not (Test-Path $Db)) {
-    throw "Binary not found at $Db. Build it locally or fix the release URL."
+if (-not (Test-Path $exe)) {
+    throw "Binary not found at $exe. Build it locally or fix the release URL."
 }
 
 # 4. MCP client registrations
@@ -38,7 +44,7 @@ $mcpConfigs = @(
 foreach ($cfg in $mcpConfigs) {
     if (Test-Path (Split-Path $cfg.path -Parent)) {
         Write-Host "Adding to $($cfg.name) ($($cfg.path))..."
-        $command = "`"$Db`""
+        $command = "`"$exe`""
         $entry = @{ "disk-cleaner-mcp" = @{ command = $command; args = @(); env = @{} } }
         if (Test-Path $cfg.path) {
             $json = Get-Content $cfg.path -Raw | ConvertFrom-Json
@@ -46,7 +52,8 @@ foreach ($cfg in $mcpConfigs) {
             $mcpServers = $json.mcpServers
             if (-not $mcpServers."disk-cleaner-mcp") {
                 $mcpServers | Add-Member -NotePropertyName "disk-cleaner-mcp" -NotePropertyValue $entry."disk-cleaner-mcp"
-                $json | ConvertTo-Json -Depth 10 | Set-Content $cfg.path -Encoding UTF8
+                # Write WITHOUT BOM — a BOM breaks strict JSON parsers (Node) reading the client config
+                [System.IO.File]::WriteAllText($cfg.path, ($json | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
                 Write-Host "  OK" -ForegroundColor Green
             }
         }
@@ -54,5 +61,5 @@ foreach ($cfg in $mcpConfigs) {
 }
 
 Write-Host ""
-Write-Host "Installed at: $Db" -ForegroundColor Green
-Write-Host "Test: $Db (expect MCP server to start, then you can use get_system_status / scan / analyze / delete)"
+Write-Host "Installed at: $exe" -ForegroundColor Green
+Write-Host "Test: $exe (expect MCP server to start, then you can use get_system_status / scan / analyze / delete)"
