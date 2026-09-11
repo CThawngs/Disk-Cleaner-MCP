@@ -13,3 +13,6 @@
 | 007 | 2026-08-09 | Linux/macOS × Windows: danh sách protected path 2 bảng (json) trong `safety.rs`, test liệt kê | Nền tảng chéo; chống path thất bại vì phân biệt hoa thường. |
 | 008 | 2026-08-09 | Xóa: spawn thread riêng cho `trash::delete` | Tránh lỗi COM apartment trên Windows worker threads. |
 | 009 | 2026-08-09 | Phân phối: GitHub Actions cross-build + `install.ps1`/`install.sh` tải release, không dùng `cargo-binstall` | Free 100%, đóng gói nhẹ, tự cấu hình MCP cho các client. |
+| 010 | 2026-09-10 | Port tính năng phân tích TreeSize thành tools NATIVE trong `insights.rs` (get_tree, file_types, find_duplicates, compare_scans), KHÔNG shell-out sang app TreeSize | TreeSize closed-source, trả phí, Windows-only → phá ethos free/cross-platform/single binary. Native = AI được dữ liệu cùng độ sâu, license sạch. |
+| 011 | 2026-09-10 | `find_duplicates` reuse approvalToken có sẵn + prefilter size trước khi hash | Nhóm duplicate dùng đúng token của scan → xóa bản thừa đi qua Safety Guard chuẩn, không đường tắt. Hash chỉ file cùng size → I/O bounded. |
+| 012 | 2026-09-10 | `compare_scans` chỉ so 2 session còn sống trong RAM, không persist snapshot ra đĩa | Tái dùng cache LRU-3 có sẵn; tránh ghi đĩa ngoài ý muốn mỗi lần quét. Lịch sử lâu dài = v0.3 (SpaceObServer-style DB). |

@@ -5,6 +5,7 @@
 
 mod analytics;
 mod engine;
+mod insights;
 mod model;
 mod safety;
 mod server;
