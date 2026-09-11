@@ -46,10 +46,7 @@ A **Rust-based MCP (Model Context Protocol) server** that gives AI agents — He
 
 ## 🚀 Quick Start
 
-### ⬇️ Latest Release (v0.1.0)
-
-> 🆕 **v0.2.0 in review** (branch [`feat/treesize-insights`](https://github.com/CThawngs/Disk-Cleaner-MCP/pull/new/feat/treesize-insights)):
-> +4 TreeSize-grade insight tools — `get_tree`, `file_types`, `find_duplicates`, `compare_scans` (details in [docs/WORKFLOW.md](docs/WORKFLOW.md)).
+### ⬇️ Latest Release (v0.2.0)
 
 Pre-built binaries for all platforms — no Rust toolchain needed:
 
