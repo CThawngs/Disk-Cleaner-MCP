@@ -209,12 +209,26 @@ pub fn is_protected(path: &Path) -> bool {
         // canonicalizes /var -> /private/var, but non-existent test paths
         // stay lexical /var/...; need both prefixes to match.
         let tmp = std::env::temp_dir();
-        let tmp_lex = tmp.to_string_lossy().to_lowercase().replace('\\', "/");
-        let tmp_can = normalize(&tmp).to_string_lossy().to_lowercase();
+        let tmp_lex = tmp
+            .to_string_lossy()
+            .to_lowercase()
+            .replace('\\', "/")
+            .trim_end_matches('/')
+            .to_string();
+        let tmp_can = normalize(&tmp)
+            .to_string_lossy()
+            .to_lowercase()
+            .trim_end_matches('/')
+            .to_string();
         let in_tmp = s_str == tmp_lex
             || s_str.starts_with(&format!("{}/", tmp_lex))
             || s_str == tmp_can
             || s_str.starts_with(&format!("{}/", tmp_can));
+        if cfg!(test) {
+            eprintln!(
+                "DEBUG is_protected path={s_str:?} tmp_lex={tmp_lex:?} tmp_can={tmp_can:?} in_tmp={in_tmp}"
+            );
+        }
         if in_tmp {
             return false;
         }
