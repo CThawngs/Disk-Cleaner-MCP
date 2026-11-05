@@ -17,7 +17,7 @@
 
 ## Trạng thái dự án
 
-- **Giai đoạn:** v0.2.0 — ĐÃ RELEASE (tag `v0.2.0`): MVP + TreeSize-grade insights (`get_tree`, `file_types`, `find_duplicates`, `compare_scans`; 11 tools).
+- **Giai đoạn:** v0.3.0 — Chưa tag (đang dev trên `main`): brain per-file judgment + safe-delete gates (`confirm_risk`, `dry_run`, audit JSONL) + 12 tools (thêm `empty_trash`) + partial-hash >4GB + snapshot prune 50 + audit ISO. Đã release v0.2.1 (tag `v0.2.1`, commit `23f0acd`): P0–P4 hardening + multiplatform.
 - **Stack:** Rust (rmcp 3.1, tokio, jwalk 0.9, rayon, sysinfo, trash 5, sha2).
 - **Nhịp công việc:** 10-bước Autonomous Agent (xem thủ công trong phiên Hermes).
 - **Trạng thái phiên 2026-09-11:** ✅ merge vào `main` (`fd5f334`, CI 3 OS success) + tag `v0.2.0` (Release workflow publish binaries) + docs đồng bộ + đóng GAP-1/2.

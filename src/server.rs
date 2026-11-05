@@ -263,7 +263,7 @@ impl DiskCleanerServer {
     /// Content-hash duplicate finder with safe-delete tokens.
     #[tool(
         name = "find_duplicates",
-        description = "TreeSize-style duplicate file finder: groups files with byte-identical content (same size + SHA-256), reports wasted bytes, and returns each copy's approvalToken so you can delete redundant copies via delete(). Content is only read for files that share a size with another file.\n\nParameters:\n- scanId: from scan()\n- minSize: minimum file size in bytes to consider (default 1048576 = 1 MiB; use 0 to include small files)\n- top: max groups returned (default 50), sorted by wasted bytes desc.\n\nSafety: never delete ALL copies — keep at least one (files are oldest-first; files[0] is usually the original)."
+        description = "TreeSize-style duplicate file finder: groups files with byte-identical content (same size + SHA-256; files >4GB use sampled head+tail hash, flagged partial — verify before delete), reports wasted bytes, and returns each copy's approvalToken so you can delete redundant copies via delete(). Content is only read for files that share a size with another file.\n\nParameters:\n- scanId: from scan()\n- minSize: minimum file size in bytes to consider (default 1048576 = 1 MiB; use 0 to include small files)\n- top: max groups returned (default 50), sorted by wasted bytes desc.\n\nSafety: never delete ALL copies — keep at least one (files are oldest-first; files[0] is usually the original)."
     )]
     async fn find_duplicates(&self, Parameters(params): Parameters<DuplicateParams>) -> String {
         match self.engine.get_session(&params.scan_id) {
@@ -310,6 +310,27 @@ impl DiskCleanerServer {
         let report =
             insights::compare_snapshots(&snap_a, &snap_b, params.top.unwrap_or(50).clamp(1, 200));
         serde_json::to_string_pretty(&report).unwrap_or_else(|e| format!("Error: {}", e))
+    }
+
+    /// Permanently empty the OS Recycle Bin / Trash.
+    #[tool(
+        name = "empty_trash",
+        description = "Permanently purge the OS Recycle Bin / Trash (IRREVERSIBLE, no undo). Use AFTER delete(trash) to actually reclaim space. Requires confirm=true. Returns purged item count + bytes (best-effort)."
+    )]
+    async fn empty_trash(&self, Parameters(params): Parameters<EmptyTrashParams>) -> String {
+        let engine = self.engine.clone();
+        let req = EmptyTrashParams {
+            confirm: params.confirm,
+        };
+        // ponytail: trash purge IO blocks — off the async executor.
+        let result = tokio::task::spawn_blocking(move || engine.empty_trash(&req))
+            .await
+            .unwrap_or_else(|e| EmptyTrashResult {
+                purged_items: 0,
+                purged_bytes: 0,
+                message: Some(format!("Task failed: {e}")),
+            });
+        serde_json::to_string_pretty(&result).unwrap_or_else(|e| format!("Error: {}", e))
     }
 }
 

@@ -67,7 +67,31 @@ impl ScanEngine {
                 if let Ok(json) = serde_json::to_string(session) {
                     let _ = std::fs::write(file, json);
                 }
+                Self::prune_snapshots(&dir);
             }
+        }
+    }
+
+    /// Keep newest 50 snapshots; delete older best-effort (unbounded growth guard).
+    fn prune_snapshots(dir: &Path) {
+        const KEEP: usize = 50;
+        let mut files: Vec<(PathBuf, std::time::SystemTime)> = std::fs::read_dir(dir)
+            .ok()
+            .into_iter()
+            .flat_map(|rd| rd.filter_map(|e| e.ok()))
+            .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+            .filter_map(|e| {
+                let m = e.metadata().ok()?.modified().ok()?;
+                Some((e.path(), m))
+            })
+            .collect();
+        if files.len() <= KEEP {
+            return;
+        }
+        files.sort_by_key(|(_, m)| *m);
+        let excess = files.len() - KEEP;
+        for (p, _) in files.into_iter().take(excess) {
+            let _ = std::fs::remove_file(p);
         }
     }
 
@@ -599,6 +623,24 @@ impl ScanEngine {
         }
     }
 
+    /// Permanently purge OS Recycle Bin / Trash. Requires confirm=true.
+    pub fn empty_trash(&self, req: &EmptyTrashParams) -> EmptyTrashResult {
+        if !req.confirm {
+            return EmptyTrashResult {
+                purged_items: 0,
+                purged_bytes: 0,
+                message: Some("rejected: confirm=true required (irreversible)".into()),
+            };
+        }
+        let (count, purged_bytes, message) = empty_trash_impl();
+        audit("-", "(trash)", "empty_trash");
+        EmptyTrashResult {
+            purged_items: count,
+            purged_bytes,
+            message,
+        }
+    }
+
     /// Organize files: move scan entries into a destination directory grouped by
     /// category or extension. Safe: token-verified, never overwrites, protected paths rejected.
     pub fn organize(&self, req: &OrganizeRequest) -> OrganizeResult {
@@ -865,6 +907,58 @@ impl Default for ScanEngine {
     }
 }
 
+/// Purge OS trash; returns (items, bytes, error-message).
+/// Windows/Linux: `trash::os_limited`. macOS: `os_limited` unavailable,
+/// so walk `~/.Trash` directly (best-effort).
+fn empty_trash_impl() -> (u64, u64, Option<String>) {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let items = match trash::os_limited::list() {
+            Ok(v) => v,
+            Err(e) => return (0, 0, Some(format!("trash list failed: {e}"))),
+        };
+        let bytes: u64 = items
+            .iter()
+            .filter_map(|i| trash::os_limited::metadata(i).ok())
+            .filter_map(|m| m.size.size())
+            .sum();
+        let count = items.len() as u64;
+        let msg = match trash::os_limited::purge_all(items) {
+            Ok(()) => None,
+            Err(e) => Some(format!("purge failed: {e}")),
+        };
+        (count, bytes, msg)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let Some(dir) = dirs::home_dir().map(|d| d.join(".Trash")) else {
+            return (0, 0, Some("no home dir".into()));
+        };
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            return (0, 0, None);
+        };
+        let mut count = 0u64;
+        let mut bytes = 0u64;
+        for e in rd.filter_map(|x| x.ok()) {
+            let p = e.path();
+            if let Ok(m) = e.metadata() {
+                if m.is_file() {
+                    bytes += m.len();
+                }
+            }
+            let r = if p.is_dir() {
+                std::fs::remove_dir_all(&p)
+            } else {
+                std::fs::remove_file(&p)
+            };
+            if r.is_ok() {
+                count += 1;
+            }
+        }
+        (count, bytes, None)
+    }
+}
+
 /// Append one JSONL line to data_dir/disk-cleaner-mcp/audit.log (best-effort).
 fn audit(scan_id: &str, path: &str, action: &str) {
     use std::io::Write;
@@ -872,10 +966,21 @@ fn audit(scan_id: &str, path: &str, action: &str) {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
+    let days = (ts / 86400) as i64;
+    let (y, m, d) = civil_from_days(days);
+    let iso = format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        y,
+        m,
+        d,
+        (ts / 3600) % 24,
+        (ts / 60) % 60,
+        ts % 60
+    );
     if let Some(dir) = dirs::data_dir().map(|d| d.join("disk-cleaner-mcp")) {
         if std::fs::create_dir_all(&dir).is_ok() {
             let line = serde_json::json!({
-                "ts": ts, "scanId": scan_id, "path": path, "action": action,
+                "ts": ts, "iso": iso, "scanId": scan_id, "path": path, "action": action,
             });
             if let Ok(mut f) = std::fs::OpenOptions::new()
                 .create(true)
@@ -1010,7 +1115,6 @@ fn chrono_like_now() -> String {
 }
 
 /// Howard Hinnant's civil-from-days algorithm.
-#[cfg(target_os = "linux")]
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
@@ -1262,6 +1366,14 @@ mod tests {
         assert!(Path::new(&entry.path).exists());
 
         let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn test_empty_trash_requires_confirm() {
+        let engine = ScanEngine::new();
+        let r = engine.empty_trash(&EmptyTrashParams { confirm: false });
+        assert_eq!(r.purged_items, 0);
+        assert!(r.message.as_deref().unwrap_or("").contains("confirm"));
     }
 
     // ---- organize tests ----

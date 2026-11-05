@@ -12,12 +12,11 @@ use crate::safety;
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
-/// Read size of the largest file we are willing to content-hash. Larger files
-/// are reported as candidates but skipped to bound I/O. `ponytail:` upgrade =
-/// chunked/partial hashing if users ask for >4GB dedup.
+/// Read size of the largest file we fully content-hash. Larger files use a
+/// sampled hash (head 64KB + tail 64KB + length) and are flagged partial.
 const MAX_HASH_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// Head stage reads only this many bytes + length, so large same-size
 /// non-duplicates cost 64KB I/O instead of full file reads.
@@ -238,19 +237,45 @@ fn hash_file(path: &str) -> Option<String> {
 }
 
 /// Hash only first HEAD_HASH_BYTES + file length (cheap prefilter).
+/// No size cap: reads at most 64KB regardless of file size.
 fn hash_file_head(path: &str, size: u64) -> Option<String> {
     let p = Path::new(path);
     let meta = std::fs::metadata(p).ok()?;
-    if !meta.is_file() || meta.len() > MAX_HASH_BYTES {
+    if !meta.is_file() {
         return None;
     }
     let mut f = std::fs::File::open(p).ok()?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; HEAD_HASH_BYTES];
     let n = f.read(&mut buf).ok()?;
-    let read = &buf[..std::cmp::min(n, size as usize)];
-    hasher.update(read);
+    hasher.update(&buf[..std::cmp::min(n, size as usize)]);
     hasher.update(size.to_le_bytes());
+    Some(safety::hex::encode(hasher.finalize()))
+}
+
+/// Sampled hash for >4GB files: head 64KB + tail 64KB + length + marker.
+/// Same-size files differing outside those windows may collide — callers
+/// flag such groups `partial` so the agent verifies before deleting.
+fn hash_file_sampled(path: &str, size: u64) -> Option<String> {
+    let p = Path::new(path);
+    let meta = std::fs::metadata(p).ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let mut f = std::fs::File::open(p).ok()?;
+    let mut hasher = Sha256::new();
+    let mut head = vec![0u8; HEAD_HASH_BYTES];
+    let n = f.read(&mut head).ok()?;
+    hasher.update(&head[..std::cmp::min(n, HEAD_HASH_BYTES)]);
+    let tail_start = size.saturating_sub(HEAD_HASH_BYTES as u64);
+    if f.seek(SeekFrom::Start(tail_start)).is_err() {
+        return None;
+    }
+    let mut tail = vec![0u8; HEAD_HASH_BYTES];
+    let m = f.read(&mut tail).ok()?;
+    hasher.update(&tail[..std::cmp::min(m, HEAD_HASH_BYTES)]);
+    hasher.update(size.to_le_bytes());
+    hasher.update(b"partial");
     Some(safety::hex::encode(hasher.finalize()))
 }
 
@@ -299,11 +324,20 @@ pub fn find_duplicates(
             head_failed += 1;
         }
     }
-    // Stage 2 (exact): full SHA-256 only for head-collision groups.
+    // Stage 2 (exact for <=4GB, sampled for >4GB): hash only head collisions.
     let colliding: Vec<Vec<&ScanEntry>> = by_head.into_values().filter(|g| g.len() >= 2).collect();
     let hashed: Vec<(&ScanEntry, Option<String>)> = colliding
         .par_iter()
-        .flat_map(|g| g.par_iter().map(|e| (*e, hash_file(&e.path))))
+        .flat_map(|g| {
+            g.par_iter().map(|e| {
+                let h = if e.size > MAX_HASH_BYTES {
+                    hash_file_sampled(&e.path, e.size)
+                } else {
+                    hash_file(&e.path)
+                };
+                (*e, h)
+            })
+        })
         .collect();
     let hashed_files = hashed.iter().filter(|(_, h)| h.is_some()).count() as u64;
     let full_failed = hashed.len() as u64 - hashed_files;
@@ -332,6 +366,7 @@ pub fn find_duplicates(
             size,
             file_count: files.len() as u64,
             wasted_size: wasted,
+            partial: size > MAX_HASH_BYTES,
             files: files
                 .into_iter()
                 .map(|e| DuplicateFile {
@@ -348,6 +383,7 @@ pub fn find_duplicates(
 
     groups.sort_by_key(|g| std::cmp::Reverse(g.wasted_size));
     let groups_found = groups.len() as u64;
+    let partial_groups = groups.iter().filter(|g| g.partial).count() as u64;
     let truncated = groups.len() > top;
     groups.truncate(top);
 
@@ -360,6 +396,7 @@ pub fn find_duplicates(
         hashed_files,
         unreadable_files,
         truncated,
+        partial_groups,
     }
 }
 
@@ -617,6 +654,27 @@ mod tests {
         // tokens preserved so caller can delete safely
         assert!(g.files.iter().all(|f| f.approval_token.starts_with("tok-")));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_sampled_hash_deterministic_and_size_salted() {
+        let dir = std::env::temp_dir().join(format!("dc-mcp-samp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let data = vec![7u8; 200_000];
+        std::fs::write(dir.join("a.bin"), &data).unwrap();
+        std::fs::write(dir.join("b.bin"), &data).unwrap();
+        let pa = dir.join("a.bin").to_string_lossy().to_string();
+        let pb = dir.join("b.bin").to_string_lossy().to_string();
+        let ha = hash_file_sampled(&pa, 200_000).unwrap();
+        let hb = hash_file_sampled(&pb, 200_000).unwrap();
+        assert_eq!(ha, hb, "identical content → identical sampled hash");
+        assert_ne!(
+            ha,
+            hash_file(&pa).unwrap(),
+            "sampled hash must differ from full hash"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

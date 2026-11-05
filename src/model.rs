@@ -315,6 +315,9 @@ pub struct DuplicateGroup {
     pub file_count: u64,
     /// Bytes reclaimable by deleting all but one copy: size * (count - 1).
     pub wasted_size: u64,
+    /// True when hash is sampled (head+tail) for files > 4 GB — verify before delete.
+    #[serde(default)]
+    pub partial: bool,
     /// Oldest-first; typically the first entry is the "original" to keep.
     pub files: Vec<DuplicateFile>,
 }
@@ -331,6 +334,26 @@ pub struct DuplicateReport {
     pub hashed_files: u64,
     pub unreadable_files: u64,
     pub truncated: bool,
+    /// Groups matched by sampled hash (>4 GB files), verify before delete.
+    #[serde(default)]
+    pub partial_groups: u64,
+}
+
+/// Permanently purge the OS Recycle Bin / Trash.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EmptyTrashParams {
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EmptyTrashResult {
+    pub purged_items: u64,
+    pub purged_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// One changed file between two scans.

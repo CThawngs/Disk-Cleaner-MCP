@@ -83,7 +83,7 @@ def main():
     EXPECTED_TOOLS = {
         "get_system_status", "list_categories", "scan", "analyze", "get_tree",
         "file_types", "find_duplicates", "compare_scans", "organize",
-        "delete", "get_report",
+        "delete", "get_report", "empty_trash",
     }
     assert EXPECTED_TOOLS <= set(names), f"missing tools: {EXPECTED_TOOLS - set(names)} (got {names})"
 
@@ -238,7 +238,16 @@ def main():
     assert diff["netDelta"] < 0, f"net delta must be negative after cleanup: {diff}"
     print(f"  ✤ compare_scans: net={diff['netDelta']}B removed={diff['removedCount']}")
 
-    # 8. cleanup temp dir
+    # 8. empty_trash without confirm → rejected, nothing purged
+    resp = srv.request("tools/call", {
+        "name": "empty_trash", "arguments": {"confirm": False}
+    })
+    check_ok(resp, "empty_trash (no confirm)")
+    et = json.loads(resp["result"]["content"][0]["text"])
+    assert et["purgedItems"] == 0 and "confirm" in (et.get("message") or ""), f"expected confirm rejection: {et}"
+    print(f"  ✓ empty_trash confirm rejection verified")
+
+    # 9. cleanup temp dir
     import shutil
     shutil.rmtree(tmp, ignore_errors=True)
 
