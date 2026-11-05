@@ -208,9 +208,8 @@ pub fn is_protected(path: &Path) -> bool {
         let tmp = std::env::temp_dir();
         let tmp_norm = normalize(&tmp);
         let tmp_str = tmp_norm.to_string_lossy().to_lowercase();
-        if !tmp_str.is_empty()
-            && (s_str == tmp_str || s_str.starts_with(&format!("{}/", tmp_str)))
-        {
+        let in_tmp = s_str == tmp_str || s_str.starts_with(&format!("{}/", tmp_str));
+        if !tmp_str.is_empty() && in_tmp {
             return false;
         }
         for p in PROTECTED_UNIX {
