@@ -92,4 +92,4 @@ Category keys: `temp`, `log`, `cache`, `browser_cache`, `node_cache`, `python_ca
 - `find_duplicates` >4GB: sampled hash (head+tail 64KB + size salt), flag `partial` — yêu cầu client verify trước khi xóa.
 - `compare_scans`: snapshot persist ra đĩa (giữ 50); không cần quét lại sau restart.
 - Không hỗ trợ mac/Linux delete test tự động trên CI Windows (cross-check thủ công).
-- `empty_trash` đã có (tool 12, cần `confirm=true`). Còn mở: streaming scan >1M entry, custom rules, `--token`/`--canary`.
+- `empty_trash` tool 14 (requires `confirm=true`). Custom rules (`config.json`) implemented. Still open: streaming scan >1M entry, `--token`/`--canary`.

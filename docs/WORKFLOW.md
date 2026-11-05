@@ -1,7 +1,7 @@
 # Disk-Cleaner-MCP — Workflow Guide
 
 > **For AI agents** (Hermes, Claude, Cursor, OpenClaw, Codex, Antigravity) and humans.
-> This document explains how to drive the 11 MCP tools safely and effectively.
+> This document explains how to drive the 14 MCP tools safely and effectively.
 
 ---
 

@@ -14,7 +14,7 @@ A **Rust-based MCP (Model Context Protocol) server** that gives AI agents — He
 
 ## ✨ Features
 
-- **13 MCP tools**:
+- **14 MCP tools**:
   | Tool | Description |
   |---|---|
   | `get_system_status` | Disk usage, user directories, platform info |
@@ -247,7 +247,7 @@ Every change must pass: `cargo fmt --check` → `cargo clippy --all-targets -- -
 │   ├── analytics.rs       # 13 junk categories + report generator
 │   ├── brain.rs           # Per-file judgment: safe_to_delete / review / keep / blocked
 │   ├── insights.rs        # TreeSize-grade analytics: tree, file types, duplicates, compare
-  ├── server.rs          # MCP tool handlers (13 tools)
+  ├── server.rs          # MCP tool handlers (14 tools)
 │   └── sysinfo_helper.rs  # Disk info, user dirs
 ├── .github/workflows/ci.yml   # CI: fmt + clippy + test + build on 3 OS
 ├── docs/WORKFLOW.md           # Agent-facing workflow guide (JSON examples, categories, safety)
