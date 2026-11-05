@@ -251,10 +251,15 @@ pub fn verify_safe_target(path: &Path) -> Result<PathBuf, String> {
     let canon = abs
         .canonicalize()
         .map_err(|e| format!("Cannot resolve target: {e}"))?;
-    // Symlinked ancestor (or self): check each ancestor component directly.
-    // String-compare against canonical form false-fires on Windows CI where
-    // temp dirs use 8.3 short names (RUNNER~1 vs runneradmin).
+    // Symlinked ancestor: check each lexical ancestor directly (not string-compare
+    // vs canonical, which false-fires on Windows CI 8.3 short names like RUNNER~1).
+    // Exception: macOS system symlinks /var -> /private/var and /tmp -> /private/tmp
+    // sit under std::env::temp_dir(), so they would block every temp-dir target.
     for anc in abs.ancestors().skip(1) {
+        #[cfg(target_os = "macos")]
+        if anc == Path::new("/var") || anc == Path::new("/tmp") {
+            continue;
+        }
         if let Ok(m) = std::fs::symlink_metadata(anc) {
             if m.file_type().is_symlink() {
                 return Err("Target has a symlinked ancestor — refused.".into());
