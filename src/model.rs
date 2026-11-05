@@ -19,6 +19,18 @@ pub struct ScanEntry {
     pub category_label: String,
     pub approval_token: String,
     pub depth: usize,
+    /// Brain verdict: safe_to_delete | review | keep | blocked.
+    #[serde(default)]
+    pub verdict: String,
+    /// Brain importance 0 (junk) .. 100 (critical).
+    #[serde(default)]
+    pub importance_score: u8,
+    /// Brain risk: safe | caution | dangerous | blocked.
+    #[serde(default)]
+    pub risk_level: String,
+    /// Why brain decided this (human-readable signals).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasons: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -46,6 +58,18 @@ pub struct ScanSummary {
     pub category_totals: Vec<CategoryTotal>,
     pub largest_entries: Vec<ScanEntry>, // top 20
     pub warnings: Vec<String>,
+    /// Brain counts: entries brain is sure are junk.
+    #[serde(default)]
+    pub safe_count: u64,
+    #[serde(default)]
+    pub review_count: u64,
+    #[serde(default)]
+    pub keep_count: u64,
+    #[serde(default)]
+    pub blocked_count: u64,
+    /// Bytes reclaimable if all safe_to_delete were removed.
+    #[serde(default)]
+    pub reclaimable_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -74,6 +98,12 @@ pub struct DeleteRequest {
     pub permanent: bool,
     #[serde(default)]
     pub confirm_permanent: bool,
+    /// Acknowledge brain review/keep verdicts (dangerous) for this batch.
+    #[serde(default)]
+    pub confirm_risk: bool,
+    /// Compute + report only; touch nothing on disk.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 /// One item's delete result.
@@ -81,7 +111,7 @@ pub struct DeleteRequest {
 #[serde(rename_all = "camelCase")]
 pub struct DeleteOutcome {
     pub path: String,
-    pub status: String, // "trashed" | "permanent" | "rejected" | "error" | "not_found"
+    pub status: String, // "trashed" | "permanent" | "rejected" | "error" | "not_found" | "dry_run"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 }
@@ -94,6 +124,10 @@ pub struct DeleteResult {
     pub permanent: u32,
     pub rejected: u32,
     pub errors: u32,
+    #[serde(default)]
+    pub dry_run: u32,
+    #[serde(default)]
+    pub would_reclaim_bytes: u64,
     pub outcomes: Vec<DeleteOutcome>,
 }
 

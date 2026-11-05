@@ -425,6 +425,10 @@ mod tests {
             category_label: cat.into(),
             approval_token: "tok".into(),
             depth: 1,
+            verdict: "safe_to_delete".into(),
+            importance_score: 0,
+            risk_level: "safe".into(),
+            reasons: vec![],
         }
     }
 }

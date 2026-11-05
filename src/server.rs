@@ -137,7 +137,7 @@ impl DiskCleanerServer {
     /// Delete files (trash or permanent).
     #[tool(
         name = "delete",
-        description = "Delete files from a previous scan. Requires scanId + items with approvalToken from analyze().\n\nSafety:\n- Default action: move to Recycle Bin/Trash (recoverable)\n- Permanent delete requires permanent=true AND confirm_permanent=true\n- System-protected paths (C:\\Windows, /usr, etc.) are ALWAYS rejected\n- Each item must have a valid approvalToken from the original scan\n\nParameters:\n- scanId: from scan()\n- items: array of { approvalToken, path }\n- permanent: true for permanent delete (default: false = trash)\n- confirm_permanent: must be true if permanent=true"
+        description = "Delete files from a previous scan. Requires scanId + items with approvalToken from analyze().\n\nSafety:\n- Default action: move to Recycle Bin/Trash (recoverable)\n- Permanent delete requires permanent=true AND confirm_permanent=true\n- Brain judges every file: safe_to_delete (trash ok), review/keep (needs confirm_risk=true after user approval), blocked (never)\n- dry_run=true reports what would be deleted without touching disk\n- System-protected paths (C:\\Windows, /usr, etc.) are ALWAYS rejected\n- Each item must have a valid approvalToken from the original scan\n\nParameters:\n- scanId: from scan()\n- items: array of { approvalToken, path }\n- permanent: true for permanent delete (default: false = trash)\n- confirm_permanent: must be true if permanent=true\n- confirm_risk: must be true to delete brain review/keep files\n- dry_run: report only, delete nothing"
     )]
     async fn delete(&self, Parameters(params): Parameters<DeleteParams>) -> String {
         let engine = self.engine.clone();
@@ -146,6 +146,8 @@ impl DiskCleanerServer {
             items: params.items.clone(),
             permanent: params.permanent,
             confirm_permanent: params.confirm_permanent,
+            confirm_risk: params.confirm_risk,
+            dry_run: params.dry_run,
         };
         let scan_id = req.scan_id.clone();
         // ponytail: trash/permanent IO blocks — off the async executor.
@@ -157,6 +159,8 @@ impl DiskCleanerServer {
                 permanent: 0,
                 rejected: 0,
                 errors: 1,
+                dry_run: 0,
+                would_reclaim_bytes: 0,
                 outcomes: vec![DeleteOutcome {
                     path: "(task)".into(),
                     status: "error".into(),
@@ -390,6 +394,14 @@ pub struct DeleteParams {
     #[schemars(description = "Must be true to confirm permanent deletion.")]
     #[serde(default)]
     pub confirm_permanent: bool,
+    #[schemars(
+        description = "Acknowledge brain review/keep verdicts. Required to delete files brain marked risky."
+    )]
+    #[serde(default)]
+    pub confirm_risk: bool,
+    #[schemars(description = "True → report what would be deleted, touch nothing.")]
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

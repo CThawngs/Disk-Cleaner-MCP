@@ -201,9 +201,12 @@ def main():
             "scanId": scan_id,
             "items": [{"approvalToken": token, "path": del_path}],
             "permanent": False,
+            "confirmRisk": True,
         },
     })
     check_ok(resp, "delete (trash)")
+    trashed = json.loads(resp["result"]["content"][0]["text"])
+    assert trashed.get("trashed", 0) >= 1, f"expected trash success, got: {trashed}"
 
     # 7. delete with WRONG token must fail gracefully (still a result)
     resp = srv.request("tools/call", {

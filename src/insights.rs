@@ -490,6 +490,10 @@ mod tests {
             category_label: "Other".into(),
             approval_token: format!("tok-{}", path),
             depth: 1,
+            verdict: "review".into(),
+            importance_score: 50,
+            risk_level: "caution".into(),
+            reasons: vec![],
         }
     }
 
@@ -504,6 +508,10 @@ mod tests {
             category_label: "Other".into(),
             approval_token: format!("tok-{}", path),
             depth,
+            verdict: "review".into(),
+            importance_score: 50,
+            risk_level: "caution".into(),
+            reasons: vec![],
         }
     }
 
@@ -630,6 +638,11 @@ mod tests {
                     category_totals: vec![],
                     largest_entries: vec![],
                     warnings: vec![],
+                    safe_count: 0,
+                    review_count: 0,
+                    keep_count: 0,
+                    blocked_count: 0,
+                    reclaimable_bytes: 0,
                 },
                 &files,
             )

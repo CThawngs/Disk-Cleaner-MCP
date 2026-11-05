@@ -4,6 +4,7 @@
 //! (Hermes, Claude, Cursor, OpenClaw, etc.).
 
 mod analytics;
+mod brain;
 mod engine;
 mod insights;
 mod model;

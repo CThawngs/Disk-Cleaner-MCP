@@ -192,7 +192,7 @@ impl ScanEngine {
         }
 
         // Parallel metadata extraction + categorization
-        let entries: Vec<ScanEntry> = raw_entries
+        let mut entries: Vec<ScanEntry> = raw_entries
             .par_iter()
             .filter_map(|(path, meta, depth)| {
                 let kind = if meta.is_dir() { "dir" } else { "file" };
@@ -219,9 +219,66 @@ impl ScanEngine {
                     category_label: category_label.clone(),
                     approval_token: token,
                     depth: *depth,
+                    verdict: String::new(),
+                    importance_score: 0,
+                    risk_level: String::new(),
+                    reasons: Vec::new(),
                 })
             })
             .collect();
+
+        // Brain: judge every entry, smallest -> largest.
+        let mut name_size: HashMap<(String, u64), usize> = HashMap::new();
+        for e in &entries {
+            if e.kind == "file" {
+                let name = Path::new(&e.path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                *name_size.entry((name, e.size)).or_insert(0) += 1;
+            }
+        }
+        for e in &mut entries {
+            let name = Path::new(&e.path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            let duplicate = e.kind == "file"
+                && e.size > 0
+                && name_size.get(&(name, e.size)).copied().unwrap_or(0) > 1;
+            let a = crate::brain::assess(
+                &e.path,
+                e.size,
+                e.modified,
+                &e.extension,
+                &e.category,
+                duplicate,
+                now_epoch,
+            );
+            e.verdict = a.verdict;
+            e.importance_score = a.importance_score;
+            e.risk_level = a.risk_level;
+            e.reasons = a.reasons;
+        }
+        // Analyze smallest -> largest so the brain's reasoning order is visible.
+        entries.sort_by_key(|e| e.size);
+
+        let (safe_count, review_count, keep_count, blocked_count, reclaimable_bytes) = entries
+            .iter()
+            .fold((0u64, 0u64, 0u64, 0u64, 0u64), |acc, e| {
+                let mut a = acc;
+                match e.verdict.as_str() {
+                    "safe_to_delete" => {
+                        a.0 += 1;
+                        a.4 += e.size;
+                    }
+                    "review" => a.1 += 1,
+                    "keep" => a.2 += 1,
+                    "blocked" => a.3 += 1,
+                    _ => {}
+                }
+                a
+            });
 
         // Build summary
         let total_size: u64 = entries
@@ -278,6 +335,11 @@ impl ScanEngine {
             category_totals,
             largest_entries,
             warnings,
+            safe_count,
+            review_count,
+            keep_count,
+            blocked_count,
+            reclaimable_bytes,
         };
 
         let session = ScanSession {
@@ -309,6 +371,8 @@ impl ScanEngine {
                     permanent: 0,
                     rejected: 0,
                     errors: 0,
+                    dry_run: 0,
+                    would_reclaim_bytes: 0,
                     outcomes: vec![DeleteOutcome {
                         path: "(scan not found)".into(),
                         status: "error".into(),
@@ -325,6 +389,8 @@ impl ScanEngine {
         let mut permanent = 0u32;
         let mut rejected = 0u32;
         let mut errors = 0u32;
+        let mut dry_run_count = 0u32;
+        let mut would_reclaim_bytes = 0u64;
         let mut outcomes = Vec::new();
 
         // Validate permanent flag
@@ -335,6 +401,8 @@ impl ScanEngine {
                 permanent: 0,
                 rejected: 1,
                 errors: 0,
+                dry_run: 0,
+                would_reclaim_bytes: 0,
                 outcomes: vec![DeleteOutcome {
                     path: "(all)".into(),
                     status: "rejected".into(),
@@ -373,6 +441,49 @@ impl ScanEngine {
                 rejected += 1;
                 continue;
             }
+            let entry = session
+                .entries
+                .iter()
+                .find(|e| e.path == item.path)
+                .cloned();
+
+            // Brain gate: blocked always; keep/review need confirm_risk.
+            if let Some(e) = &entry {
+                match e.verdict.as_str() {
+                    "blocked" => {
+                        outcomes.push(DeleteOutcome {
+                            path: item.path.clone(),
+                            status: "rejected".into(),
+                            message: Some(format!(
+                                "BLOCKED by brain (importance {}): {}",
+                                e.importance_score,
+                                e.reasons.join("; ")
+                            )),
+                        });
+                        rejected += 1;
+                        audit(&req.scan_id, &item.path, "rejected-blocked");
+                        continue;
+                    }
+                    "keep" | "review" if !req.confirm_risk => {
+                        outcomes.push(DeleteOutcome {
+                            path: item.path.clone(),
+                            status: "rejected".into(),
+                            message: Some(format!(
+                                "Brain verdict '{}' (importance {}, risk {}): {} — resend with confirm_risk=true after user approval.",
+                                e.verdict,
+                                e.importance_score,
+                                e.risk_level,
+                                e.reasons.join("; ")
+                            )),
+                        });
+                        rejected += 1;
+                        audit(&req.scan_id, &item.path, "rejected-needs-confirm-risk");
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+
             let canon = match safety::verify_safe_target(path) {
                 Ok(c) => c,
                 Err(msg) => {
@@ -396,6 +507,32 @@ impl ScanEngine {
             };
             let path = canon.as_path();
 
+            // Dry-run: report only, touch nothing.
+            if req.dry_run {
+                let size = entry.as_ref().map(|e| e.size).unwrap_or(0);
+                would_reclaim_bytes += size;
+                dry_run_count += 1;
+                outcomes.push(DeleteOutcome {
+                    path: item.path.clone(),
+                    status: "dry_run".into(),
+                    message: Some(format!(
+                        "Would {} {} bytes (verdict={}). Nothing deleted.",
+                        if req.permanent {
+                            "permanently delete"
+                        } else {
+                            "trash"
+                        },
+                        size,
+                        entry
+                            .as_ref()
+                            .map(|e| e.verdict.as_str())
+                            .unwrap_or("unknown")
+                    )),
+                });
+                audit(&req.scan_id, &item.path, "dry_run");
+                continue;
+            }
+
             // 4) Execute delete: trash or permanent
             if req.permanent {
                 let remove = if path.is_dir() {
@@ -411,6 +548,7 @@ impl ScanEngine {
                             message: None,
                         });
                         permanent += 1;
+                        audit(&req.scan_id, &item.path, "permanent");
                     }
                     Err(e) => {
                         outcomes.push(DeleteOutcome {
@@ -435,6 +573,7 @@ impl ScanEngine {
                             message: None,
                         });
                         trashed += 1;
+                        audit(&req.scan_id, &item.path, "trashed");
                     }
                     Err(e) => {
                         outcomes.push(DeleteOutcome {
@@ -454,6 +593,8 @@ impl ScanEngine {
             permanent,
             rejected,
             errors,
+            dry_run: dry_run_count,
+            would_reclaim_bytes,
             outcomes,
         }
     }
@@ -724,6 +865,29 @@ impl Default for ScanEngine {
     }
 }
 
+/// Append one JSONL line to data_dir/disk-cleaner-mcp/audit.log (best-effort).
+fn audit(scan_id: &str, path: &str, action: &str) {
+    use std::io::Write;
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if let Some(dir) = dirs::data_dir().map(|d| d.join("disk-cleaner-mcp")) {
+        if std::fs::create_dir_all(&dir).is_ok() {
+            let line = serde_json::json!({
+                "ts": ts, "scanId": scan_id, "path": path, "action": action,
+            });
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join("audit.log"))
+            {
+                let _ = writeln!(f, "{line}");
+            }
+        }
+    }
+}
+
 /// Trash.delete on a dedicated OS thread to ensure correct COM apartment on Windows.
 fn trash_delete_on_thread(path: PathBuf) -> Result<(), trash::Error> {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -933,6 +1097,8 @@ mod tests {
             }],
             permanent: true,
             confirm_permanent: true,
+            confirm_risk: true,
+            dry_run: false,
         };
         let del_result = engine.delete(&del_req);
         assert_eq!(del_result.permanent, 1);
@@ -966,6 +1132,8 @@ mod tests {
             }],
             permanent: false,
             confirm_permanent: false,
+            confirm_risk: false,
+            dry_run: false,
         };
         let del_result = engine.delete(&del_req);
         assert_eq!(del_result.rejected, 1);
@@ -998,6 +1166,8 @@ mod tests {
             }],
             permanent: true,
             confirm_permanent: false,
+            confirm_risk: false,
+            dry_run: false,
         };
         let del_result = engine.delete(&del_req);
         assert_eq!(del_result.rejected, 1);
@@ -1030,10 +1200,66 @@ mod tests {
             }],
             permanent: true,
             confirm_permanent: true,
+            confirm_risk: true,
+            dry_run: false,
         };
         let del_result = engine.delete(&del_req);
         assert_eq!(del_result.permanent, 1);
         assert!(!Path::new(&entry.path).exists());
+
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn test_delete_review_requires_confirm_risk_and_dry_run_safe() {
+        let engine = ScanEngine::new();
+        let temp = std::env::temp_dir().join("dc-mcp-test-scan-brain");
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).unwrap();
+        std::fs::write(temp.join("movie.mkv"), "video-bytes").unwrap();
+
+        let result = engine.scan(&temp).unwrap();
+        let session = engine.get_session(&result.summary.scan_id).unwrap();
+        let entry = session
+            .entries
+            .iter()
+            .find(|e| e.path.ends_with("movie.mkv"))
+            .unwrap()
+            .clone();
+        assert_eq!(
+            entry.verdict, "review",
+            "fresh non-junk file is review, not safe"
+        );
+
+        let item = || DeleteItemRequest {
+            approval_token: entry.approval_token.clone(),
+            path: entry.path.clone(),
+        };
+
+        // No confirm_risk → rejected by brain, file untouched.
+        let denied = engine.delete(&DeleteRequest {
+            scan_id: result.summary.scan_id.clone(),
+            items: vec![item()],
+            permanent: false,
+            confirm_permanent: false,
+            confirm_risk: false,
+            dry_run: false,
+        });
+        assert_eq!(denied.rejected, 1);
+        assert!(Path::new(&entry.path).exists());
+
+        // confirm_risk + dry_run → reports, touches nothing.
+        let probe = engine.delete(&DeleteRequest {
+            scan_id: result.summary.scan_id.clone(),
+            items: vec![item()],
+            permanent: false,
+            confirm_permanent: false,
+            confirm_risk: true,
+            dry_run: true,
+        });
+        assert_eq!(probe.dry_run, 1);
+        assert!(probe.would_reclaim_bytes > 0);
+        assert!(Path::new(&entry.path).exists());
 
         let _ = std::fs::remove_dir_all(&temp);
     }
