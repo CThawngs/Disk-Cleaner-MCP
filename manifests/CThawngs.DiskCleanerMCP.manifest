@@ -1,7 +1,7 @@
-// Winget manifest template for disk-cleaner-mcp v0.5.0.
-// To publish: submit to microsoft/winget-pkgs under
-// manifests/CThawngs/DiskCleanerMCP/<version>/, then bump PackageVersion,
-// InstallerUrl, and InstallerSha256 on each release.
+# Winget manifest template for disk-cleaner-mcp v0.5.0.
+# To publish: submit to microsoft/winget-pkgs under
+# manifests/CThawngs/DiskCleanerMCP/<version>/, then bump PackageVersion,
+# InstallerUrl, and InstallerSha256 on each release.
 PackageIdentifier: CThawngs.DiskCleanerMCP
 PackageVersion: 0.5.0
 PackageName: Disk Cleaner MCP
@@ -10,7 +10,7 @@ License: MIT
 ShortDescription: Disk Cleaner MCP — safe, evidence-backed junk cleanup over the Model Context Protocol
 Description: |
   Disk Cleaner MCP scans for junk (temp, caches, duplicate files), reports what it found,
-  and deletes only after an explicit dry-run review. Offers 13 MCP tools incl. scan, analyze,
+  and deletes only after an explicit dry-run review. Offers 14 MCP tools incl. scan, analyze,
   find_duplicates, get_tree, and get_report.
 Tags:
 - disk-cleaner
