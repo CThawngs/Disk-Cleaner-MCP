@@ -47,6 +47,22 @@ impl DiskCleanerServer {
         serde_json::to_string_pretty(&status).unwrap_or_else(|e| format!("Error: {}", e))
     }
 
+    /// Get aggregated disk metrics: disk count, total/used/available/trash bytes, max usage.
+    /// Telemetry is gated by DCM_TELEMETRY env var; unset returns zeroed (redacted) metrics.
+    #[tool(
+        name = "get_metrics",
+        description = "Get aggregated disk metrics (sums across all mounted volumes). Returns zeroed metrics unless DCM_TELEMETRY env var is set. Read-only."
+    )]
+    async fn get_metrics(&self) -> String {
+        let status = sysinfo_helper::get_system_status();
+        let metrics = if status.telemetry_enabled {
+            status.metrics
+        } else {
+            Metrics::default()
+        };
+        serde_json::to_string_pretty(&metrics).unwrap_or_else(|e| format!("Error: {}", e))
+    }
+
     /// List all junk categories.
     #[tool(
         name = "list_categories",

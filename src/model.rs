@@ -241,6 +241,20 @@ pub struct SystemStatus {
     pub health: String,
     #[serde(default)]
     pub telemetry_enabled: bool,
+    #[serde(default)]
+    pub metrics: Metrics,
+}
+
+/// Aggregated disk telemetry: sums across all mounted volumes.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Metrics {
+    pub disk_count: u64,
+    pub total_bytes: u64,
+    pub used_bytes: u64,
+    pub available_bytes: u64,
+    pub trash_bytes: u64,
+    pub max_usage_percent: f64,
 }
 
 pub(crate) fn default_health() -> String {

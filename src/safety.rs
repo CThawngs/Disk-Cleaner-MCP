@@ -287,6 +287,15 @@ pub fn verify_safe_target(path: &Path) -> Result<PathBuf, String> {
         if anc == Path::new("/var") || anc == Path::new("/tmp") {
             continue;
         }
+        // macOS system symlinks resolve under /private (e.g. /etc -> /private/etc).
+        #[cfg(target_os = "macos")]
+        if anc.is_symlink() {
+            if let Ok(c) = anc.canonicalize() {
+                if c.starts_with("/private") {
+                    continue;
+                }
+            }
+        }
         if let Ok(m) = std::fs::symlink_metadata(anc) {
             if m.file_type().is_symlink() {
                 return Err("Target has a symlinked ancestor — refused.".into());

@@ -81,7 +81,7 @@ def main():
     names = [t["name"] for t in tools]
     print(f"  ✤ tools: {names}")
     EXPECTED_TOOLS = {
-        "get_system_status", "list_categories", "scan", "analyze", "get_tree",
+        "get_system_status", "get_metrics", "list_categories", "scan", "analyze", "get_tree",
         "file_types", "find_duplicates", "compare_scans", "organize",
         "delete", "get_report", "empty_trash", "list_trash",
     }
@@ -94,6 +94,14 @@ def main():
     check_ok(resp, "get_system_status")
     status = json.loads(resp["result"]["content"][0]["text"])
     print(f"  ✤ platform={status.get('platform')} disks={len(status.get('disks', []))}")
+
+    # 3b. get_metrics
+    resp = srv.request("tools/call", {
+        "name": "get_metrics", "arguments": {}
+    })
+    check_ok(resp, "get_metrics")
+    metrics = json.loads(resp["result"]["content"][0]["text"])
+    print(f"  ✤ metrics: disks={metrics.get('diskCount')} maxUsage={metrics.get('maxUsagePercent')}")
 
     # 4. scan a throwaway temp dir
     tmp = tempfile.mkdtemp(prefix="dc-mcp-smoke-")

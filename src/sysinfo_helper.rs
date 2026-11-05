@@ -69,6 +69,20 @@ pub fn get_system_status() -> SystemStatus {
         user_dirs.insert("documents".into(), d.to_string_lossy().to_string());
     }
 
+    let metrics = Metrics {
+        disk_count: disks.len() as u64,
+        total_bytes: disks.iter().map(|d| d.total_bytes).sum(),
+        used_bytes: disks.iter().map(|d| d.used_bytes).sum(),
+        available_bytes: disks.iter().map(|d| d.available_bytes).sum(),
+        trash_bytes: disks.iter().map(|d| d.trash_bytes).sum(),
+        max_usage_percent: disks.iter().map(|d| d.usage_percent).fold(0.0f64, f64::max),
+    };
+    let health = if metrics.max_usage_percent >= 90.0 {
+        "degraded".into()
+    } else {
+        "ok".into()
+    };
+
     SystemStatus {
         platform,
         hostname,
@@ -77,8 +91,9 @@ pub fn get_system_status() -> SystemStatus {
         disks,
         user_dirs,
         version: VERSION.into(),
-        health: "ok".into(),
+        health,
         telemetry_enabled: std::env::var("DCM_TELEMETRY").is_ok(),
+        metrics,
     }
 }
 
@@ -118,10 +133,15 @@ fn trash_size_for(mount: &str) -> u64 {
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = mount;
-        dirs::home_dir()
-            .map(|h| dir_size(&h.join(".Trash")))
-            .unwrap_or(0)
+        let mount_path = std::path::Path::new(mount);
+        // Home-volume trash lives in ~/.Trash; external volumes use
+        // <mount>/.Trashes/<uid>. Measure whichever applies to this volume.
+        if let Some(home) = dirs::home_dir() {
+            if home.starts_with(mount_path) {
+                return dir_size(&home.join(".Trash"));
+            }
+        }
+        dir_size(&mount_path.join(".Trashes"))
     }
     #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
