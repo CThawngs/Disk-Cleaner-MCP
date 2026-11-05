@@ -23,6 +23,12 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             ext: ""
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            ext: ""
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            ext: ""
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -45,12 +51,12 @@ jobs:
           cargo install cargo-cyclonedx --locked --quiet
           cargo cyclonedx --locked --format json --override-filename sbom-${{ matrix.target }} --all-features || true
       - name: RPM (Linux only)
-        if: matrix.os == 'ubuntu-latest'
+        if: runner.os == 'Linux'
         run: |
           cargo install cargo-rpm --locked --quiet
           cargo rpm --target ${{ matrix.target }} || true
       - name: Ad-hoc sign macOS binary (Gatekeeper-friendly, no cert needed)
-        if: matrix.os == 'macos-latest'
+        if: runner.os == 'macOS'
         run: codesign --force --sign - target/${{ matrix.target }}/release/disk-cleaner-mcp && codesign --verify target/${{ matrix.target }}/release/disk-cleaner-mcp
       - name: Rename binary with target suffix
         shell: bash
@@ -61,7 +67,10 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: disk-cleaner-mcp-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/disk-cleaner-mcp-${{ matrix.target }}${{ matrix.ext }}
+          path: |
+            target/${{ matrix.target }}/release/disk-cleaner-mcp-${{ matrix.target }}${{ matrix.ext }}
+            target/cyclonedx/sbom-${{ matrix.target }}.json
+            target/${{ matrix.target }}/release/*.rpm
 
   publish:
     needs: release
@@ -76,8 +85,6 @@ jobs:
           merge-multiple: true
       - name: Include installers (README curl | bash / irm quick start)
         run: cp install.sh install.ps1 artifacts/
-      - name: Include SBOM/RPM if present
-        run: cp target/*/release/sbom-* artifacts/ 2>/dev/null || true; cp target/*/release/*.rpm artifacts/ 2>/dev/null || true
       - name: Generate SHA256 checksums
         run: |
           cd artifacts

@@ -440,4 +440,38 @@ mod tests {
         let _ = std::fs::remove_file(&real);
         let _ = std::fs::remove_dir(&dir);
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_verify_safe_target_junction_ancestor_rejected() {
+        let dir = std::env::temp_dir().join(format!("dcm-junction-test-{}", std::process::id()));
+        let real = dir.join("real");
+        let junction = dir.join("junc");
+        let _ = std::fs::create_dir_all(&real);
+        std::fs::write(real.join("file.txt"), b"hi").unwrap();
+        let mklink_ok = std::process::Command::new("cmd")
+            .args([
+                "/C",
+                "mklink",
+                "/J",
+                junction.to_str().unwrap(),
+                real.to_str().unwrap(),
+            ])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !mklink_ok {
+            let _ = std::fs::remove_file(real.join("file.txt"));
+            let _ = std::fs::remove_dir(&real);
+            let _ = std::fs::remove_dir(&dir);
+            return;
+        }
+        // Child of junction must be refused (junction is ancestor reparse point).
+        assert!(verify_safe_target(&junction.join("file.txt")).is_err());
+        assert!(verify_safe_target(&real.join("file.txt")).is_ok());
+        let _ = std::fs::remove_file(real.join("file.txt"));
+        let _ = std::process::Command::new("cmd").args(["/C", "rmdir", junction.to_str().unwrap()]);
+        let _ = std::fs::remove_dir(&real);
+        let _ = std::fs::remove_dir(&dir);
+    }
 }
