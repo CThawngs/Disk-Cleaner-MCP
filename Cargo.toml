@@ -1,6 +1,6 @@
 [package]
 name = "disk-cleaner-mcp"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Zero <nguyenchithang2804@gmail.com>"]
 license = "MIT"
@@ -27,8 +27,30 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 trash = "5.2"
 
+# Optional HTTP mode: `cargo build --features http`, run `--http [PORT]`.
+# Loopback-only Streamable HTTP; stdio stays the default transport.
+[features]
+default = []
+http = ["dep:axum", "rmcp/transport-streamable-http-server"]
+
+[dependencies.axum]
+version = "0.8"
+optional = true
+
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = true
+
+[package.metadata.deb]
+name = "disk-cleaner-mcp"
+maintainer = "Zero <nguyenchithang2804@gmail.com>"
+copyright = "2026 Zero"
+license-file = "LICENSE"
+description = "Rust MCP server: fast safe disk cleanup for AI agents"
+section = "utils"
+assets = [
+    ["target/release/disk-cleaner-mcp", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/disk-cleaner-mcp/", "644"],
+]

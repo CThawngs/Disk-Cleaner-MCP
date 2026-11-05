@@ -60,7 +60,7 @@ impl DiskCleanerServer {
     /// Scan a root path for files.
     #[tool(
         name = "scan",
-        description = "Scan a root path for files and junk. Returns a summary with scanId, category totals, and top 20 largest files. Use 'analyze' with the scanId to filter and paginate entries.\n\nSafety: NEVER scan C:\\Windows, C:\\Program Files, /usr, /boot, or other system paths. The scan is read-only — file content is never read, only metadata (size, modified, path).\n\nParameters:\n- root: Root path to scan (default: user Downloads dir if omitted)"
+        description = "Scan a root path for files and junk. Returns a summary with scanId, category totals, and top 20 largest files. Use 'analyze' with the scanId to filter and paginate entries.\n\nSafety: NEVER scan C:\\Windows, C:\\Program Files, /usr, /boot, or other system paths. The scan is read-only — file content is never read, only metadata (size, modified, path).\n\nParameters:\n- root: Root path to scan (default: user Downloads dir if omitted)\n- maxEntries: entry cap before truncation (default 200000)\n- maxDepth: walk depth limit (default 15)"
     )]
     async fn scan(&self, Parameters(params): Parameters<ScanParams>) -> String {
         let root_path = match params.root {
@@ -73,13 +73,16 @@ impl DiskCleanerServer {
                         .unwrap_or_else(|| ".".into())
                 }),
         };
+        let max_entries = params.max_entries;
+        let max_depth = params.max_depth;
 
         let engine = self.engine.clone();
         // ponytail: full scan blocks for seconds — keep it off the async executor.
-        let result =
-            tokio::task::spawn_blocking(move || engine.scan(std::path::Path::new(&root_path)))
-                .await
-                .unwrap_or_else(|e| Err(format!("Scan task failed: {e}")));
+        let result = tokio::task::spawn_blocking(move || {
+            engine.scan_with_limits(std::path::Path::new(&root_path), max_entries, max_depth)
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("Scan task failed: {e}")));
 
         match result {
             Ok(scan_result) => serde_json::to_string_pretty(&scan_result)
@@ -312,6 +315,26 @@ impl DiskCleanerServer {
         serde_json::to_string_pretty(&report).unwrap_or_else(|e| format!("Error: {}", e))
     }
 
+    /// List what is in the OS Recycle Bin / Trash.
+    #[tool(
+        name = "list_trash",
+        description = "List items currently sitting in the OS Recycle Bin / Trash (read-only, before you call empty_trash). Returns name, original path, size, and deletion time, newest first."
+    )]
+    async fn list_trash(&self, Parameters(params): Parameters<ListTrashParams>) -> String {
+        let engine = self.engine.clone();
+        let limit = params.limit;
+        // ponytail: trash IO blocks — off the async executor.
+        let result = tokio::task::spawn_blocking(move || engine.list_trash(limit)).await;
+        match result {
+            Ok(r) => serde_json::to_string_pretty(&r).unwrap_or_else(|e| format!("Error: {}", e)),
+            Err(e) => serde_json::to_string_pretty(&serde_json::json!({
+                "error": true,
+                "message": format!("Task failed: {e}"),
+            }))
+            .unwrap_or_else(|_| "Error".into()),
+        }
+    }
+
     /// Permanently empty the OS Recycle Bin / Trash.
     #[tool(
         name = "empty_trash",
@@ -359,6 +382,22 @@ pub struct ScanParams {
     #[schemars(description = "Root path to scan. Default: user Downloads directory if omitted.")]
     #[serde(default)]
     pub root: Option<String>,
+    #[schemars(
+        description = "Max entries to collect before truncating (default 200000, clamp 100..2000000)"
+    )]
+    #[serde(default)]
+    pub max_entries: Option<usize>,
+    #[schemars(description = "Max walk depth (default 15, clamp 1..64)")]
+    #[serde(default)]
+    pub max_depth: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListTrashParams {
+    #[schemars(description = "Max items returned (default 100, clamp 1..500)")]
+    #[serde(default)]
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

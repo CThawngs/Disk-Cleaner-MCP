@@ -5,6 +5,7 @@
 
 mod analytics;
 mod brain;
+mod config;
 mod engine;
 mod insights;
 mod model;
@@ -28,6 +29,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("Starting Disk Cleaner MCP Server v{}", model::VERSION);
 
+    // Optional HTTP mode (feature "http"): `disk-cleaner-mcp --http [PORT]`
+    // serves Streamable HTTP on loopback only (default 8000) — stdio default.
+    #[cfg(feature = "http")]
+    if let Some(port) = http_port_arg() {
+        return run_http(port).await;
+    }
+
     let server = DiskCleanerServer::new();
 
     // Serve over stdio (MCP standard transport)
@@ -45,5 +53,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    Ok(())
+}
+
+/// Parse `--http [PORT]` / `--http=PORT` (None = stdio mode).
+#[cfg(feature = "http")]
+fn http_port_arg() -> Option<u16> {
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        if a == "--http" {
+            return args.next().and_then(|p| p.parse().ok()).or(Some(8000));
+        }
+        if let Some(p) = a.strip_prefix("--http=") {
+            return p.parse().ok().or(Some(8000));
+        }
+    }
+    None
+}
+
+/// Serve MCP over Streamable HTTP, bound to loopback only.
+#[cfg(feature = "http")]
+async fn run_http(port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    use rmcp::transport::streamable_http_server::{
+        session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
+    };
+    use std::sync::Arc;
+
+    let service = StreamableHttpService::new(
+        || Ok(DiskCleanerServer::new()),
+        Arc::new(LocalSessionManager::default()),
+        StreamableHttpServerConfig::default(),
+    );
+    let app = axum::Router::new().nest_service("/mcp", service);
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
+    tracing::info!("MCP Streamable HTTP on http://127.0.0.1:{port}/mcp (loopback only)");
+    axum::serve(listener, app).await?;
     Ok(())
 }

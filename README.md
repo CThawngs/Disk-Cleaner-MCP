@@ -14,20 +14,22 @@ A **Rust-based MCP (Model Context Protocol) server** that gives AI agents — He
 
 ## ✨ Features
 
-- **11 MCP tools**:
+- **13 MCP tools**:
   | Tool | Description |
   |---|---|
   | `get_system_status` | Disk usage, user directories, platform info |
   | `list_categories` | All junk categories + descriptions |
-  | `scan` | Scan a root path, returns `scanId` + summary |
+  | `scan` | Scan a root path (`maxEntries` 100–2M, `maxDepth` 1–64 caps), returns `scanId` + summary |
   | `analyze` | Filter/page entries (category, size, age, sort), returns approval tokens |
   | `get_tree` | **TreeSize-style folder tree** — recursive size per folder ("where did the space go?") |
   | `file_types` | **TreeSize-style file-type breakdown** — size/count per extension |
-  | `find_duplicates` | **TreeSize-style duplicate finder** — size prefilter + SHA-256, returns deletion tokens |
+  | `find_duplicates` | **TreeSize-style duplicate finder** — size prefilter + SHA-256 (files >4GB use sampled hash, flagged `partial` — verify before delete), returns deletion tokens |
   | `compare_scans` | **TreeSize-style diff** — what changed between two scans (added/removed/grown, net delta) |
   | `organize` | **Sort files into a destination tree by category or extension** (dry-run supported, never overwrites) |
-  | `delete` | Move files to trash / permanent (requires double confirmation) |
+  | `delete` | Move files to trash / permanent (requires double confirmation). Brain judges every file first: `blocked` never, `review`/`keep` need `confirm_risk=true` |
   | `get_report` | Markdown report of a scan |
+  | `empty_trash` | **Permanently purge the OS Recycle Bin / Trash** (irreversible, requires `confirm=true`) — use after `delete` to reclaim space |
+  | `list_trash` | List current Recycle Bin / Trash contents (newest first, `limit` 1–500) |
 
 - **Safety Guard** (immutable, cannot be disabled):
   - Protected paths blocked: `C:\Windows`, `C:\Program Files`, `/usr`, `/boot`, `pagefile.sys`, `$Recycle.Bin`, etc.
@@ -46,7 +48,7 @@ A **Rust-based MCP (Model Context Protocol) server** that gives AI agents — He
 
 ## 🚀 Quick Start
 
-### ⬇️ Latest Release (v0.2.0)
+### ⬇️ Latest Release (v0.3.0)
 
 Pre-built binaries for all platforms — no Rust toolchain needed:
 
@@ -132,6 +134,25 @@ Add to your MCP client config (e.g., Claude Desktop `claude_desktop_config.json`
 // 4. Delete (move to trash)
 { "method": "tools/call", "params": { "name": "delete", "arguments": { "scanId": "<id>", "items": [{"approvalToken":"...","path":"..."}] } } }
 ```
+
+### transports
+
+Default: stdio. Optional HTTP (loopback-only, requires `http` feature build):
+`disk-cleaner-mcp --http [PORT]` (default `8000`) serves Streamable HTTP at
+`http://127.0.0.1:8000/mcp`.
+
+### custom rules (optional)
+
+`config_dir/disk-cleaner-mcp/config.json` (loaded once at startup; additive
+only — built-in Safety Guard blocks can never be lifted):
+
+```json
+{ "protectedExtra": ["D:/important"], "keepGlobs": ["*.key"], "safeGlobs": ["*.tmp"] }
+```
+
+- `protectedExtra`: extra paths always blocked
+- `keepGlobs`: glob matches forced to `keep`
+- `safeGlobs`: glob matches downgraded to `safe_to_delete`
 
 ---
 
@@ -224,8 +245,9 @@ Every change must pass: `cargo fmt --check` → `cargo clippy --all-targets -- -
 │   ├── safety.rs          # Safety Guard: blocklist, tokens, path normalization
 │   ├── engine.rs          # Scan/analyze/organize/delete engines
 │   ├── analytics.rs       # 13 junk categories + report generator
+│   ├── brain.rs           # Per-file judgment: safe_to_delete / review / keep / blocked
 │   ├── insights.rs        # TreeSize-grade analytics: tree, file types, duplicates, compare
-│   ├── server.rs          # MCP tool handlers (11 tools)
+  ├── server.rs          # MCP tool handlers (13 tools)
 │   └── sysinfo_helper.rs  # Disk info, user dirs
 ├── .github/workflows/ci.yml   # CI: fmt + clippy + test + build on 3 OS
 ├── docs/WORKFLOW.md           # Agent-facing workflow guide (JSON examples, categories, safety)

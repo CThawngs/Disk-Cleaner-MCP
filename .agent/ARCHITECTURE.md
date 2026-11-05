@@ -53,8 +53,8 @@
 ### Insights (TreeSize-grade, v0.2 — src/insights.rs)
 - `get_tree`: roll size mỗi file lên toàn bộ ancestor → node giữ recursive size; children sort size desc, truncate `top` + rollup "(+N more)" giữ tổng chính xác.
 - `file_types`: group extension → (count, size), sort size desc.
-- `find_duplicates`: prefilter theo size → head hash 64KB+len → full SHA-256 CHỈ nhóm trùng head → group theo (size, sha256). Bỏ qua file >4GB (cap I/O) + protected. Mỗi file trả kèm approvalToken → AI xóa bản thừa qua luồng delete an toàn. `files` oldest-first.
-- `compare_scans`: build snapshot in-memory từ 2 session sống (LRU 3), diff theo path: added/removed/changed + netDelta. KHÔNG persist đĩa (quét lại nếu session bị evict).
+- `find_duplicates`: prefilter theo size → head hash 64KB+len → full SHA-256 CHỈ nhóm trùng head → group theo (size, sha256). File >4GB dùng sampled hash (head 64KB + tail 64KB + size salt), flag `partial` + `partial_groups` — client verify trước khi xóa. Mỗi file trả kèm approvalToken → AI xóa bản thừa qua luồng delete an toàn. `files` oldest-first.
+- `compare_scans`: diff 2 snapshot đã persist vào `data_dir/disk-cleaner-mcp/snapshots/<scan_id>.json` (prune giữ 50 mới nhất). Mỗi scan tự ghi snapshot sau khi xong → compare được cả scan cũ sau restart.
 - Tất cả read-only, không cần token, không sửa Safety Guard.
 
 ## 3b. Data model insights (JSON, camelCase)
@@ -89,8 +89,7 @@ Category keys: `temp`, `log`, `cache`, `browser_cache`, `node_cache`, `python_ca
 
 ## 6. Limitation / Hướng mở rộng
 
-- `find_duplicates` bỏ qua file >4GB (cap I/O) — nâng cấp: partial/chunked hashing.
-- `compare_scans` chỉ so 2 scan còn sống trong RAM (LRU 3) — nâng cấp: persist snapshot ra đĩa (TreeSize Professional có DB lịch sử).
+- `find_duplicates` >4GB: sampled hash (head+tail 64KB + size salt), flag `partial` — yêu cầu client verify trước khi xóa.
+- `compare_scans`: snapshot persist ra đĩa (giữ 50); không cần quét lại sau restart.
 - Không hỗ trợ mac/Linux delete test tự động trên CI Windows (cross-check thủ công).
-- `empty_trash`, `custom rules`, chunked streaming scan (quá 1M entry) — để v0.3.
-- Cửa mở: `--token`, `--canary`?
+- `empty_trash` đã có (tool 12, cần `confirm=true`). Còn mở: streaming scan >1M entry, custom rules, `--token`/`--canary`.

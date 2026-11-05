@@ -83,7 +83,7 @@ def main():
     EXPECTED_TOOLS = {
         "get_system_status", "list_categories", "scan", "analyze", "get_tree",
         "file_types", "find_duplicates", "compare_scans", "organize",
-        "delete", "get_report", "empty_trash",
+        "delete", "get_report", "empty_trash", "list_trash",
     }
     assert EXPECTED_TOOLS <= set(names), f"missing tools: {EXPECTED_TOOLS - set(names)} (got {names})"
 
@@ -246,6 +246,15 @@ def main():
     et = json.loads(resp["result"]["content"][0]["text"])
     assert et["purgedItems"] == 0 and "confirm" in (et.get("message") or ""), f"expected confirm rejection: {et}"
     print(f"  ✓ empty_trash confirm rejection verified")
+
+    # 8b. list_trash — lists OS Recycle Bin / Trash contents
+    resp = srv.request("tools/call", {
+        "name": "list_trash", "arguments": {"limit": 5}
+    })
+    check_ok(resp, "list_trash")
+    lt = json.loads(resp["result"]["content"][0]["text"])
+    assert "items" in lt and "totalItems" in lt, f"expected items/totalItems: {lt}"
+    print(f"  ✓ list_trash: {lt['totalItems']} item(s) in trash")
 
     # 9. cleanup temp dir
     import shutil

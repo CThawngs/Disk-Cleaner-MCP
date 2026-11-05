@@ -12,6 +12,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_SCAN_ENTRIES: usize = 200_000;
+const MAX_SCAN_DEPTH: usize = 15;
 
 /// One scan session.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -128,8 +129,23 @@ impl ScanEngine {
         arc
     }
 
-    /// Run a scan at `root`. Returns a summary + populates cache.
+    /// Run a scan at `root`. `max_entries`/`max_depth` override the built-in
+    /// caps (200k entries / depth 15) — clamped to sane bounds.
+    #[allow(dead_code)] // kept for tests; server uses scan_with_limits
     pub fn scan(&self, root: &Path) -> Result<ScanResult, String> {
+        self.scan_with_limits(root, None, None)
+    }
+
+    pub fn scan_with_limits(
+        &self,
+        root: &Path,
+        max_entries: Option<usize>,
+        max_depth: Option<usize>,
+    ) -> Result<ScanResult, String> {
+        let max_entries = max_entries
+            .unwrap_or(MAX_SCAN_ENTRIES)
+            .clamp(100, 2_000_000);
+        let max_depth = max_depth.unwrap_or(MAX_SCAN_DEPTH).clamp(1, 64);
         if !root.exists() {
             return Err(format!("Root path does not exist: {}", root.display()));
         }
@@ -149,7 +165,7 @@ impl ScanEngine {
         // Walk dir
         let walker = WalkDirGeneric::<((), ())>::new(root)
             .follow_links(false)
-            .max_depth(15)
+            .max_depth(max_depth)
             .sort(false)
             .parallelism(Parallelism::RayonDefaultPool {
                 busy_timeout: std::time::Duration::from_secs(10),
@@ -192,9 +208,9 @@ impl ScanEngine {
                         files_scanned += 1;
                     }
 
-                    if raw_entries.len() >= MAX_SCAN_ENTRIES {
+                    if raw_entries.len() >= max_entries {
                         truncated = true;
-                        warnings.push(format!("Scan truncated at {} entries. Use a more specific path or analyze with filters.", MAX_SCAN_ENTRIES));
+                        warnings.push(format!("Scan truncated at {} entries. Use a more specific path or analyze with filters.", max_entries));
                         break;
                     }
 
@@ -270,6 +286,8 @@ impl ScanEngine {
             let duplicate = e.kind == "file"
                 && e.size > 0
                 && name_size.get(&(name, e.size)).copied().unwrap_or(0) > 1;
+            // Brain verdict, then user custom rules (can only tighten or
+            // downgrade junk — never unblock a blocked entry).
             let a = crate::brain::assess(
                 &e.path,
                 e.size,
@@ -283,6 +301,17 @@ impl ScanEngine {
             e.importance_score = a.importance_score;
             e.risk_level = a.risk_level;
             e.reasons = a.reasons;
+            if crate::config::matches_keep(&e.path) {
+                e.verdict = "keep".into();
+                e.risk_level = "caution".into();
+                e.importance_score = e.importance_score.max(90);
+                e.reasons.push("custom keepGlobs rule".into());
+            } else if e.verdict != "blocked" && crate::config::matches_safe(&e.path) {
+                e.verdict = "safe_to_delete".into();
+                e.risk_level = "safe".into();
+                e.importance_score = e.importance_score.min(10);
+                e.reasons.push("custom safeGlobs rule (downgraded)".into());
+            }
         }
         // Analyze smallest -> largest so the brain's reasoning order is visible.
         entries.sort_by_key(|e| e.size);
@@ -354,7 +383,7 @@ impl ScanEngine {
             dirs_scanned,
             total_size,
             truncated,
-            max_entries: MAX_SCAN_ENTRIES,
+            max_entries,
             version: VERSION.into(),
             category_totals,
             largest_entries,
@@ -620,6 +649,22 @@ impl ScanEngine {
             dry_run: dry_run_count,
             would_reclaim_bytes,
             outcomes,
+        }
+    }
+
+    /// List what is currently in the OS Recycle Bin / Trash.
+    pub fn list_trash(&self, limit: Option<usize>) -> TrashListResult {
+        let limit = limit.unwrap_or(100).clamp(1, 500);
+        let mut entries = trash_items();
+        let total_bytes: u64 = entries.iter().map(|e| e.size_bytes).sum();
+        let total_items = entries.len() as u64;
+        entries.sort_by_key(|b| std::cmp::Reverse(b.time_deleted));
+        entries.truncate(limit);
+        TrashListResult {
+            items: entries,
+            total_items,
+            total_bytes,
+            message: None,
         }
     }
 
@@ -904,6 +949,49 @@ impl ScanEngine {
 impl Default for ScanEngine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Snapshot of OS trash contents (name, original path, size, deleted time).
+/// Windows/Linux via `trash::os_limited`; macOS walks `~/.Trash` directly.
+fn trash_items() -> Vec<TrashItemEntry> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        trash::os_limited::list()
+            .unwrap_or_default()
+            .iter()
+            .map(|i| TrashItemEntry {
+                name: i.name.to_string_lossy().into_owned(),
+                original_path: i.original_path().to_string_lossy().into_owned(),
+                size_bytes: trash::os_limited::metadata(i)
+                    .ok()
+                    .and_then(|m| m.size.size())
+                    .unwrap_or(0),
+                time_deleted: i.time_deleted,
+            })
+            .collect()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let trash_dir = dirs::home_dir().unwrap_or_default().join(".Trash");
+        std::fs::read_dir(&trash_dir)
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .map(|e| {
+                        let p = e.path();
+                        let size = std::fs::metadata(&p)
+                            .map(|m| if m.is_file() { m.len() } else { 0 })
+                            .unwrap_or(0);
+                        TrashItemEntry {
+                            name: e.file_name().to_string_lossy().into_owned(),
+                            original_path: String::new(),
+                            size_bytes: size,
+                            time_deleted: 0,
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 

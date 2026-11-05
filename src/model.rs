@@ -356,6 +356,27 @@ pub struct EmptyTrashResult {
     pub message: Option<String>,
 }
 
+/// One item currently in the OS Recycle Bin / Trash.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashItemEntry {
+    pub name: String,
+    pub original_path: String,
+    pub size_bytes: u64,
+    /// Epoch seconds when trashed (0 = unknown).
+    pub time_deleted: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashListResult {
+    pub items: Vec<TrashItemEntry>,
+    pub total_items: u64,
+    pub total_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
 /// One changed file between two scans.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]

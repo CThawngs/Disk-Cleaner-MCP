@@ -172,6 +172,10 @@ fn strip_ads(s: &str) -> String {
 
 /// Check if a path is protected (must NEVER be deleted).
 pub fn is_protected(path: &Path) -> bool {
+    // User `protectedExtra` rules: additions only, never lift a built-in block.
+    if crate::config::is_extra_protected(path) {
+        return true;
+    }
     let normalized = normalize(path);
     let s = normalized.to_string_lossy();
     let s_str = strip_ads(&s).to_lowercase();
