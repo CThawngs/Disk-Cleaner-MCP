@@ -205,11 +205,17 @@ pub fn is_protected(path: &Path) -> bool {
         // is the point of the tool; /var system subdirs stay blocked.
         // Extra rules above still win. Paths that don't exist yet are
         // compared lexically, mirroring normalize().
+        // ponytail: check both forms — temp_dir() exists so normalize()
+        // canonicalizes /var -> /private/var, but non-existent test paths
+        // stay lexical /var/...; need both prefixes to match.
         let tmp = std::env::temp_dir();
-        let tmp_norm = normalize(&tmp);
-        let tmp_str = tmp_norm.to_string_lossy().to_lowercase();
-        let in_tmp = s_str == tmp_str || s_str.starts_with(&format!("{}/", tmp_str));
-        if !tmp_str.is_empty() && in_tmp {
+        let tmp_lex = tmp.to_string_lossy().to_lowercase().replace('\\', "/");
+        let tmp_can = normalize(&tmp).to_string_lossy().to_lowercase();
+        let in_tmp = s_str == tmp_lex
+            || s_str.starts_with(&format!("{}/", tmp_lex))
+            || s_str == tmp_can
+            || s_str.starts_with(&format!("{}/", tmp_can));
+        if in_tmp {
             return false;
         }
         for p in PROTECTED_UNIX {

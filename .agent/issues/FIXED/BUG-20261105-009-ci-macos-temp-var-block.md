@@ -1,37 +1,8 @@
-# BUG-20261105-009: macOS brain blocked via /var prefix on temp paths
+# BUG-20261105-009 — macOS CI: brain tests blocked bởi /var (temp_dir)
 
-- **Status:** FIXED
-- **Severity:** P1 (CI macOS 4 failures)
-- **Run:** 41984965342 (37 passed / 4 failed) on commit dbb5f48
-
-## Symptoms
-- `brain::assess` returned `"blocked"` for temp-dir files: `test_temp_junk_safe`
-  (expected safe_to_delete), `test_executable_keep` (`left: "blocked" right: "keep"`),
-  `test_config_keep`, `test_duplicate_lowers_importance` (importance not lowered
-  because blocked verdict short-circuits scoring).
-
-## Root cause
-- `brain::assess` blocks solely via `safety::is_protected` (brain.rs:61).
-- `is_protected` prefix-matches normalized path against `PROTECTED_UNIX` which
-  includes `"/var"` (safety.rs:20).
-- macOS `std::env::temp_dir()` = `/var/folders/...` → every `p()` test path
-  prefix-matched `/var` → blocked.
-- Previous fix (BUG-20261105-008) only exempted `/var`/`/tmp` in
-  `verify_safe_target` ancestor loop, not in `is_protected`.
-
-## Fix
-- `src/safety.rs` `is_protected()` non-Windows block: exempt per-user
-  `std::env::temp_dir()` subtree (normalized, lowercased, prefix match) BEFORE
-  `PROTECTED_UNIX` loop. `is_extra_protected` still checked first (wins).
-  `/var` system subdirs outside temp dir stay blocked.
-- Rationale: cleaning caches under temp dir is the tool's purpose; Safety Guard
-  protects system dirs, not user temp scratch space.
-
-## Verification
-- `cargo fmt --check`: 0
-- `cargo clippy --all-targets` + `--features http`: 0 warnings
-- `cargo check`: 0
-- `cargo test`: 43/43 passed
-- `cargo build --release`: ok
-- `py smoke_test.py`: ALL PASSED (list_trash: 126 item(s))
-- macOS proof requires CI green (unverifiable on Windows host).
+- **Phát hiện:** CI run 41986339820 trên commit 243056f — macOS 37 passed / 4 failed (cùng 4 test brain như run 41984965342 trên dbb5f48).
+- **Triệu chứng:** `test_temp_junk_safe` (left "blocked" right "safe_to_delete"), `test_executable_keep`/`test_config_keep` (left "blocked" right "keep"), `test_duplicate_lowers_importance` (importance không hạ vì cả 2 đều blocked).
+- **Nguyên nhân:** `brain::assess` chỉ trả "blocked" qua `is_protected` (brain.rs:61). Path test `p()` nằm trong `std::env::temp_dir()` — macOS: `/var/folders/.../dcm-brain-test/...` — prefix-match `PROTECTED_UNIX` `"/var"` (safety.rs:20) → blocked. Fix v1 (7bb31c7) exempt temp trong `is_protected` nhưng dùng `normalize(temp_dir())` (canonicalize `/var` → `/private/var`) so với path test không tồn tại (lexical-clean `/var/...`) → prefix mismatch, exemption không fire trên CI.
+- **Fix v2:** `is_protected()` so cả 2 dạng: lexical `temp_dir()` + `normalize(temp_dir())`. Chỉ exempt subtree temp của user; system subdirs dưới `/var` vẫn bị chặn. `is_extra_protected` vẫn chạy trước.
+- **Kiểm chứng local:** cargo fmt --check 0, cargo clippy --all-targets 0, --features http 0, cargo test 43/43, smoke ALL PASSED (128 items).
+- **Commit:** (pending push) — chờ CI 3 OS xanh.
