@@ -200,6 +200,19 @@ pub fn is_protected(path: &Path) -> bool {
 
     #[cfg(not(windows))]
     {
+        // Exempt the per-user temp dir: on macOS it lives under
+        // /var/folders/... (beneath protected /var). Cleaning caches there
+        // is the point of the tool; /var system subdirs stay blocked.
+        // Extra rules above still win. Paths that don't exist yet are
+        // compared lexically, mirroring normalize().
+        let tmp = std::env::temp_dir();
+        let tmp_norm = normalize(&tmp);
+        let tmp_str = tmp_norm.to_string_lossy().to_lowercase();
+        if !tmp_str.is_empty()
+            && (s_str == tmp_str || s_str.starts_with(&format!("{}/", tmp_str)))
+        {
+            return false;
+        }
         for p in PROTECTED_UNIX {
             if s_str == *p || s_str.starts_with(&format!("{}/", p)) {
                 return true;
