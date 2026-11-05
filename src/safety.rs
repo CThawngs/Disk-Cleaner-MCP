@@ -224,11 +224,6 @@ pub fn is_protected(path: &Path) -> bool {
             || s_str.starts_with(&format!("{}/", tmp_lex))
             || s_str == tmp_can
             || s_str.starts_with(&format!("{}/", tmp_can));
-        if cfg!(test) {
-            eprintln!(
-                "DEBUG is_protected path={s_str:?} tmp_lex={tmp_lex:?} tmp_can={tmp_can:?} in_tmp={in_tmp}"
-            );
-        }
         if in_tmp {
             return false;
         }
