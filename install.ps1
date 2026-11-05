@@ -26,7 +26,24 @@ if (-not $SkipBinary) {
         $url = "https://github.com/CThawngs/Disk-Cleaner-MCP/releases/download/$Version/$asset"
     }
     Write-Host "Downloading $url ..."
-    Invoke-WebRequest -Uri $url -OutFile $exe
+    $tmp = "$exe.tmp"
+    Invoke-WebRequest -Uri $url -OutFile $tmp
+    # Verify SHA256 against release checksums (supply-chain integrity)
+    if ($Version -eq "latest") {
+        $sumUrl = "https://github.com/CThawngs/Disk-Cleaner-MCP/releases/latest/download/checksums.txt"
+    } else {
+        $sumUrl = "https://github.com/CThawngs/Disk-Cleaner-MCP/releases/download/$Version/checksums.txt"
+    }
+    $sumFile = Join-Path $env:TEMP "checksums-disk-cleaner-$PID.txt"
+    Invoke-WebRequest -Uri $sumUrl -OutFile $sumFile
+    $line = Get-Content $sumFile | Where-Object { $_ -match [regex]::Escape($asset) } | Select-Object -First 1
+    if (-not $line) { Remove-Item $sumFile -ErrorAction SilentlyContinue; throw "checksums.txt missing entry for $asset" }
+    $expected = ($line -split '\s+')[0]
+    $actual = (Get-FileHash $tmp -Algorithm SHA256).Hash.ToLower()
+    Remove-Item $sumFile -ErrorAction SilentlyContinue
+    if ($expected.ToLower() -ne $actual) { throw "checksum mismatch (expected $expected, got $actual)" }
+    Write-Host "Checksum OK: $actual" -ForegroundColor Green
+    Move-Item -Force $tmp $exe
 }
 
 # 3. Verify binary exists
@@ -45,6 +62,19 @@ foreach ($cfg in $mcpConfigs) {
     if (Test-Path (Split-Path $cfg.path -Parent)) {
         Write-Host "Adding to $($cfg.name) ($($cfg.path))..."
         $command = "`"$exe`""
+        if ($cfg.path -like "*.toml") {
+            # Codex uses TOML — JSON writer would corrupt config.toml
+            $snippet = "`n[mcp_servers.disk-cleaner-mcp]`ncommand = `"$exe`"`n"
+            $existing = ""
+            if (Test-Path $cfg.path) { $existing = Get-Content $cfg.path -Raw }
+            if ($existing -notmatch 'mcp_servers\.disk-cleaner-mcp') {
+                Add-Content $cfg.path $snippet
+                Write-Host "  OK" -ForegroundColor Green
+            } else {
+                Write-Host "  already present, skipping"
+            }
+            continue
+        }
         $entry = @{ "disk-cleaner-mcp" = @{ command = $command; args = @(); env = @{} } }
         if (Test-Path $cfg.path) {
             $json = Get-Content $cfg.path -Raw | ConvertFrom-Json

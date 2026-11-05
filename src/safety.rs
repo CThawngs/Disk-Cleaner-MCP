@@ -7,30 +7,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 /// Absolute paths (case-insensitive on Windows) that must NEVER be deleted.
-#[cfg(windows)]
-const PROTECTED_WINDOWS: &[&str] = &[
-    "C:\\Windows",
-    "C:\\Program Files",
-    "C:\\Program Files (x86)",
-    "C:\\ProgramData",
-    "C:\\System Volume Information",
-    "C:\\Recovery",
-    "C:\\$Recycle.Bin",
-    "C:\\Boot",
-    "C:\\EFI",
-    "C:\\Documents and Settings",
-];
-
-#[cfg(windows)]
-const PROTECTED_FILES_WINDOWS: &[&str] = &[
-    "pagefile.sys",
-    "hiberfil.sys",
-    "swapfile.sys",
-    "ntuser.dat",
-    "ntuser.dat.LOG",
-    "ntuser.ini",
-];
-
+/// Windows list is drive-aware via `protected_windows()` (SystemRoot).
 #[cfg(not(windows))]
 const PROTECTED_UNIX: &[&str] = &[
     "/usr",
@@ -53,6 +30,39 @@ const PROTECTED_UNIX: &[&str] = &[
     "/home",
 ];
 
+#[cfg(windows)]
+const PROTECTED_FILES_WINDOWS: &[&str] = &[
+    "pagefile.sys",
+    "hiberfil.sys",
+    "swapfile.sys",
+    "ntuser.dat",
+    "ntuser.dat.LOG",
+    "ntuser.ini",
+];
+
+/// Windows protected roots resolved against real system drive + env dirs,
+/// so Windows installed on D: (or non-standard ProgramData) stays covered.
+/// ponytail: env-based, no registry access needed.
+#[cfg(windows)]
+fn protected_windows() -> Vec<String> {
+    let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
+    let drive: String = sysroot.chars().take(2).collect(); // "C:"
+    let program_data =
+        std::env::var("ProgramData").unwrap_or_else(|_| format!("{drive}\\ProgramData"));
+    vec![
+        sysroot,
+        format!("{drive}\\Program Files"),
+        format!("{drive}\\Program Files (x86)"),
+        program_data,
+        format!("{drive}\\System Volume Information"),
+        format!("{drive}\\Recovery"),
+        format!("{drive}\\$Recycle.Bin"),
+        format!("{drive}\\Boot"),
+        format!("{drive}\\EFI"),
+        format!("{drive}\\Documents and Settings"),
+    ]
+}
+
 /// Directories to SKIP during scan (prune) — read none of their contents.
 const SKIP_DIRS: &[&str] = &[
     ".git",
@@ -66,25 +76,10 @@ const SKIP_DIRS: &[&str] = &[
     ".cache",
 ];
 
-/// Generate a random salt (32 bytes) as hex.
+/// Generate a random salt (32 bytes) as hex — CSPRNG via OS (getrandom).
 pub fn generate_salt() -> String {
-    // OS rng via time + stack entropy; per-session salt only.
-    use std::time::{SystemTime, UNIX_EPOCH};
     let mut bytes = [0u8; 32];
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let stack_var = 0u8;
-    let stack_addr = &stack_var as *const u8 as u64;
-    let tid = std::thread::current()
-        .name()
-        .map(|s| s.len() as u64)
-        .unwrap_or(0);
-    let seed: u128 = now ^ ((stack_addr as u128) << 1) ^ ((tid as u128) << 3);
-    for (i, b) in bytes.iter_mut().enumerate() {
-        *b = ((seed >> ((i % 16) * 8)) & 0xFF) as u8;
-    }
+    getrandom::fill(&mut bytes).expect("CSPRNG unavailable");
     hex::encode(bytes)
 }
 
@@ -111,7 +106,25 @@ pub fn verify_token(salt: &str, path: &str, supplied: &str) -> bool {
     diff == 0
 }
 
-/// Normalize a path for comparison: absolute, forward-slash, lowercase on Windows.
+/// Lexically collapse `.`/`..` without touching the filesystem.
+/// Used as a fallback when `canonicalize` fails (path may not exist yet).
+pub fn lexical_clean(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            _ => out.push(comp.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Normalize a path for comparison: absolute, forward-slash, lowercase on
+/// case-insensitive filesystems (Windows NTFS + macOS APFS default).
 pub fn normalize(path: &Path) -> PathBuf {
     let pb = if path.is_absolute() {
         path.to_path_buf()
@@ -120,9 +133,9 @@ pub fn normalize(path: &Path) -> PathBuf {
     };
 
     // Canonicalize if possible (resolves symlinks, removes ..)
-    let canonical = pb.canonicalize().unwrap_or_else(|_| pb.clone());
+    let canonical = pb.canonicalize().unwrap_or_else(|_| lexical_clean(&pb));
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         let s = canonical.to_string_lossy();
         let mut lower = s.to_lowercase().replace('\\', "/");
@@ -141,15 +154,31 @@ pub fn normalize(path: &Path) -> PathBuf {
     }
 }
 
+/// Strip NTFS alternate-data-stream suffix (`file.txt:stream`) for checks.
+fn strip_ads(s: &str) -> String {
+    // Keep drive letter `C:`; drop everything after the first ':' beyond it.
+    let colon = s.find(':');
+    if let Some(i) = colon {
+        if i == 1 && s.len() > 1 && s.as_bytes()[1] == b':' {
+            if let Some(j) = s[i + 1..].find(':') {
+                return s[..i + 1 + j].to_string();
+            }
+        } else {
+            return s[..i].to_string();
+        }
+    }
+    s.to_string()
+}
+
 /// Check if a path is protected (must NEVER be deleted).
 pub fn is_protected(path: &Path) -> bool {
     let normalized = normalize(path);
     let s = normalized.to_string_lossy();
-    let s_str = s.as_ref().to_lowercase();
+    let s_str = strip_ads(&s).to_lowercase();
 
     #[cfg(windows)]
     {
-        for p in PROTECTED_WINDOWS {
+        for p in protected_windows() {
             let pn = p.to_lowercase().replace('\\', "/");
             if s_str == pn || s_str.starts_with(&format!("{}/", pn)) {
                 return true;
@@ -178,10 +207,62 @@ pub fn is_protected(path: &Path) -> bool {
     false
 }
 
+/// Light normalization for comparing a canonical path against a lexically
+/// cleaned one: NO `canonicalize()` here, or symlinked ancestors would be
+/// resolved on both sides and the divergence check would never fire.
+/// Strips `\\?\` prefix + lowercases on Windows (case-insensitive FS).
+fn light_normalize(path: &Path) -> PathBuf {
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        let mut lower = path.to_string_lossy().to_lowercase().replace('\\', "/");
+        for prefix in ["//?/", "//./"] {
+            if let Some(stripped) = lower.strip_prefix(prefix) {
+                lower = stripped.to_string();
+                break;
+            }
+        }
+        PathBuf::from(lower)
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_path_buf()
+    }
+}
+
+/// Verify a delete/move target immediately before the operation (TOCTOU guard):
+/// exists, is not a symlink itself, has no symlinked ancestors (canonical path
+/// must equal the lexically-cleaned absolute path, modulo `\\?\` prefix/case),
+/// and is not protected. Returns the canonical path to operate on.
+pub fn verify_safe_target(path: &Path) -> Result<PathBuf, String> {
+    let meta = std::fs::symlink_metadata(path)
+        .map_err(|e| format!("Target does not exist or is inaccessible: {e}"))?;
+    if meta.file_type().is_symlink() {
+        return Err("Target is a symlink — refused.".into());
+    }
+    let abs = if path.is_absolute() {
+        lexical_clean(path)
+    } else {
+        lexical_clean(&std::env::current_dir().unwrap_or_default().join(path))
+    };
+    let canon = abs
+        .canonicalize()
+        .map_err(|e| format!("Cannot resolve target: {e}"))?;
+    // Symlinked ancestor (or self) → canonical diverges from lexical path.
+    // Compare canonical `canon` against lexically-cleaned `abs` (NOT re-canonicalized).
+    let norm_c = light_normalize(&canon);
+    let norm_a = light_normalize(&abs);
+    if norm_c != norm_a {
+        return Err("Target differs from canonical path (symlinked ancestor?) — refused.".into());
+    }
+    if is_protected(&canon) {
+        return Err("Path is system-protected. Operation BLOCKED by Safety Guard.".into());
+    }
+    Ok(canon)
+}
+
 /// Check if a directory name should be skipped during scan (prune).
 pub fn should_skip_dir(name: &str) -> bool {
-    let nl = name.to_lowercase();
-    SKIP_DIRS.iter().any(|d| nl == d.to_lowercase())
+    SKIP_DIRS.iter().any(|d| d.eq_ignore_ascii_case(name))
 }
 
 /// Minimal hex encode (no extra dep).
@@ -245,6 +326,18 @@ mod tests {
     }
 
     #[test]
+    fn test_lexical_clean() {
+        assert_eq!(lexical_clean(Path::new("/a/b/../c")), PathBuf::from("/a/c"));
+        assert_eq!(lexical_clean(Path::new("/a/./b")), PathBuf::from("/a/b"));
+    }
+
+    #[test]
+    fn test_ads_stripped() {
+        assert_eq!(strip_ads("c:/windows/system32:f"), "c:/windows/system32");
+        assert_eq!(strip_ads("c:/windows/system32"), "c:/windows/system32");
+    }
+
+    #[test]
     fn test_should_skip_dir() {
         assert!(should_skip_dir(".git"));
         assert!(should_skip_dir("node_modules"));
@@ -258,5 +351,29 @@ mod tests {
         assert!(is_protected(Path::new("/usr/bin")));
         assert!(is_protected(Path::new("/boot")));
         assert!(!is_protected(Path::new("/home/user/project")));
+    }
+
+    #[test]
+    fn test_verify_safe_target_symlink_rejected() {
+        let dir = std::env::temp_dir().join(format!("dcm-symlink-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let real = dir.join("real.txt");
+        let link = dir.join("link.txt");
+        std::fs::write(&real, b"hi").unwrap();
+        #[cfg(unix)]
+        let link_ok = std::os::unix::fs::symlink(&real, &link).is_ok();
+        #[cfg(windows)]
+        let link_ok = std::os::windows::fs::symlink_file(&real, &link).is_ok();
+        if !link_ok {
+            // Windows without SeCreateSymbolicLinkPrivilege — skip.
+            let _ = std::fs::remove_file(&real);
+            let _ = std::fs::remove_dir(&dir);
+            return;
+        }
+        assert!(verify_safe_target(&link).is_err());
+        assert!(verify_safe_target(&real).is_ok());
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_file(&real);
+        let _ = std::fs::remove_dir(&dir);
     }
 }

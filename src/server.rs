@@ -10,12 +10,12 @@ use rmcp::model::{ServerCapabilities, ServerInfo};
 use rmcp::{tool, tool_handler, tool_router, ServerHandler};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// MCP server state.
 #[derive(Clone)]
 pub struct DiskCleanerServer {
-    engine: Arc<Mutex<ScanEngine>>,
+    engine: Arc<ScanEngine>,
     #[allow(dead_code)] // held by #[tool_router] macro internals
     tool_router: ToolRouter<Self>,
 }
@@ -23,7 +23,7 @@ pub struct DiskCleanerServer {
 impl DiskCleanerServer {
     pub fn new() -> Self {
         Self {
-            engine: Arc::new(Mutex::new(ScanEngine::new())),
+            engine: Arc::new(ScanEngine::new()),
             tool_router: Self::tool_router(),
         }
     }
@@ -74,12 +74,12 @@ impl DiskCleanerServer {
                 }),
         };
 
-        let root_std = std::path::Path::new(&root_path);
-
-        let result = {
-            let mut engine = self.engine.lock().unwrap();
-            engine.scan(root_std)
-        };
+        let engine = self.engine.clone();
+        // ponytail: full scan blocks for seconds — keep it off the async executor.
+        let result =
+            tokio::task::spawn_blocking(move || engine.scan(std::path::Path::new(&root_path)))
+                .await
+                .unwrap_or_else(|e| Err(format!("Scan task failed: {e}")));
 
         match result {
             Ok(scan_result) => serde_json::to_string_pretty(&scan_result)
@@ -100,8 +100,7 @@ impl DiskCleanerServer {
         description = "Filter and paginate entries from a previous scan. Requires scanId from scan().\n\nFilters:\n- kind: 'file' or 'dir'\n- category: one of list_categories() keys\n- name_glob: glob pattern like '*.log'\n- extension: file extension like 'log'\n- min_size: minimum size in bytes\n- min_age_days: minimum age in days (based on modified time)\n\nSorting:\n- sort_by: 'size' (default), 'modified', or 'name'\n- sort_desc: true (default)\n\nPagination:\n- offset: starting index (default 0)\n- limit: page size (default 100, max 500)\n\nReturns entries with approvalToken for each file."
     )]
     async fn analyze(&self, Parameters(params): Parameters<AnalyzeParams>) -> String {
-        let engine = self.engine.lock().unwrap();
-        match engine.get_session(&params.scan_id) {
+        match self.engine.get_session(&params.scan_id) {
             Some(session) => {
                 let req = AnalyzeRequest {
                     scan_id: params.scan_id.clone(),
@@ -141,14 +140,29 @@ impl DiskCleanerServer {
         description = "Delete files from a previous scan. Requires scanId + items with approvalToken from analyze().\n\nSafety:\n- Default action: move to Recycle Bin/Trash (recoverable)\n- Permanent delete requires permanent=true AND confirm_permanent=true\n- System-protected paths (C:\\Windows, /usr, etc.) are ALWAYS rejected\n- Each item must have a valid approvalToken from the original scan\n\nParameters:\n- scanId: from scan()\n- items: array of { approvalToken, path }\n- permanent: true for permanent delete (default: false = trash)\n- confirm_permanent: must be true if permanent=true"
     )]
     async fn delete(&self, Parameters(params): Parameters<DeleteParams>) -> String {
-        let engine = self.engine.lock().unwrap();
+        let engine = self.engine.clone();
         let req = DeleteRequest {
             scan_id: params.scan_id.clone(),
             items: params.items.clone(),
             permanent: params.permanent,
             confirm_permanent: params.confirm_permanent,
         };
-        let result = engine.delete(&req);
+        let scan_id = req.scan_id.clone();
+        // ponytail: trash/permanent IO blocks — off the async executor.
+        let result = tokio::task::spawn_blocking(move || engine.delete(&req))
+            .await
+            .unwrap_or_else(|e| DeleteResult {
+                scan_id,
+                trashed: 0,
+                permanent: 0,
+                rejected: 0,
+                errors: 1,
+                outcomes: vec![DeleteOutcome {
+                    path: "(task)".into(),
+                    status: "error".into(),
+                    message: Some(format!("Delete task failed: {e}")),
+                }],
+            });
         serde_json::to_string_pretty(&result).unwrap_or_else(|e| format!("Error: {}", e))
     }
 
@@ -158,7 +172,7 @@ impl DiskCleanerServer {
         description = "Organize files into the destination directory, grouped into subfolders by category (default) or extension. Safe: token-verified (like delete), NEVER overwrites existing files, protected system paths are rejected, directories are skipped (not moved).\n\nParameters:\n- scanId: from scan()\n- items: array of { approvalToken, path } from analyze()\n- destDir: existing destination directory (server will NOT create it; creates only group subfolders inside it)\n- strategy: 'category' (default) or 'extension'\n- dryRun: true → only compute planned moves, move nothing\n\nExample: organize(scanId, [{approvalToken, path}], 'C:/Users/me/Organized', strategy='category') moves a .jpg into .../Organized/Images/, a .log into .../Organized/Log Files/."
     )]
     async fn organize(&self, Parameters(params): Parameters<OrganizeParams>) -> String {
-        let engine = self.engine.lock().unwrap();
+        let engine = self.engine.clone();
         let req = OrganizeRequest {
             scan_id: params.scan_id.clone(),
             items: params.items.clone(),
@@ -166,7 +180,24 @@ impl DiskCleanerServer {
             strategy: params.strategy,
             dry_run: params.dry_run,
         };
-        let result = engine.organize(&req);
+        let scan_id = req.scan_id.clone();
+        // ponytail: rename IO blocks — off the async executor.
+        let result = tokio::task::spawn_blocking(move || engine.organize(&req))
+            .await
+            .unwrap_or_else(|e| OrganizeResult {
+                scan_id,
+                moved: 0,
+                dry_run: 0,
+                skipped: 0,
+                rejected: 0,
+                errors: 1,
+                outcomes: vec![OrganizeOutcome {
+                    path: "(task)".into(),
+                    status: "error".into(),
+                    dest: None,
+                    message: Some(format!("Organize task failed: {e}")),
+                }],
+            });
         serde_json::to_string_pretty(&result).unwrap_or_else(|e| format!("Error: {}", e))
     }
 
@@ -176,8 +207,7 @@ impl DiskCleanerServer {
         description = "Generate a Markdown report of a scan. Requires scanId. Returns a formatted report with category breakdown and top files."
     )]
     async fn get_report(&self, Parameters(params): Parameters<ReportParams>) -> String {
-        let engine = self.engine.lock().unwrap();
-        match engine.get_session(&params.scan_id) {
+        match self.engine.get_session(&params.scan_id) {
             Some(session) => analytics::generate_report(&session.summary, &session.entries),
             None => format!(
                 "# Error\n\nScan '{}' not found. Run scan first.",
@@ -194,8 +224,7 @@ impl DiskCleanerServer {
         description = "TreeSize-style aggregated folder tree: every folder with its RECURSIVE size (this folder + all descendants), file counts, and share of the scan root. Use it to answer 'where did the space go' before picking files. Requires scanId from scan(). Read-only.\n\nParameters:\n- scanId: from scan()\n- top: max children per folder (default 10). Truncated folders are folded into a '(+N more)' rollup so totals stay exact."
     )]
     async fn get_tree(&self, Parameters(params): Parameters<TreeParams>) -> String {
-        let engine = self.engine.lock().unwrap();
-        match engine.get_session(&params.scan_id) {
+        match self.engine.get_session(&params.scan_id) {
             Some(session) => {
                 let tree = insights::build_tree(
                     &session.entries,
@@ -214,8 +243,7 @@ impl DiskCleanerServer {
         description = "TreeSize-style file-type breakdown: total size and count per file extension, largest first. Shows WHAT is eating space (videos, archives, logs...). Requires scanId from scan(). Read-only.\n\nParameters:\n- scanId: from scan()\n- limit: max extensions returned (default 30) sorted by size desc."
     )]
     async fn file_types(&self, Parameters(params): Parameters<FileTypesParams>) -> String {
-        let engine = self.engine.lock().unwrap();
-        match engine.get_session(&params.scan_id) {
+        match self.engine.get_session(&params.scan_id) {
             Some(session) => {
                 let report = insights::file_types(
                     &session.entries,
@@ -234,8 +262,7 @@ impl DiskCleanerServer {
         description = "TreeSize-style duplicate file finder: groups files with byte-identical content (same size + SHA-256), reports wasted bytes, and returns each copy's approvalToken so you can delete redundant copies via delete(). Content is only read for files that share a size with another file.\n\nParameters:\n- scanId: from scan()\n- minSize: minimum file size in bytes to consider (default 1048576 = 1 MiB; use 0 to include small files)\n- top: max groups returned (default 50), sorted by wasted bytes desc.\n\nSafety: never delete ALL copies — keep at least one (files are oldest-first; files[0] is usually the original)."
     )]
     async fn find_duplicates(&self, Parameters(params): Parameters<DuplicateParams>) -> String {
-        let engine = self.engine.lock().unwrap();
-        match engine.get_session(&params.scan_id) {
+        match self.engine.get_session(&params.scan_id) {
             Some(session) => {
                 let min_size = params.min_size.unwrap_or(1_048_576);
                 let report = insights::find_duplicates(
@@ -256,10 +283,9 @@ impl DiskCleanerServer {
         description = "TreeSize-style 'compare over time': diff two scans of the same tree and see what changed — files added, removed, and size changes, plus net delta (negative = space freed). Requires TWO live scanIds from scan() (scans are cached in RAM, max 3 — re-scan both roots if a session was evicted).\n\nParameters:\n- scanIdA: earlier scan\n- scanIdB: later scan\n- top: max rows per section (default 50)."
     )]
     async fn compare_scans(&self, Parameters(params): Parameters<CompareParams>) -> String {
-        let engine = self.engine.lock().unwrap();
         let (sa, sb) = match (
-            engine.get_session(&params.scan_id_a),
-            engine.get_session(&params.scan_id_b),
+            self.engine.get_session(&params.scan_id_a),
+            self.engine.get_session(&params.scan_id_b),
         ) {
             (Some(a), Some(b)) => (a, b),
             (missing_a, missing_b) => {

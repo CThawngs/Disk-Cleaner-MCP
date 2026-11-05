@@ -37,11 +37,12 @@ pub fn get_system_status() -> SystemStatus {
             0.0
         };
         disks.push(DiskInfo {
-            mount_point: mount,
+            mount_point: mount.clone(),
             total_bytes: total,
             used_bytes: used,
             available_bytes: available,
             usage_percent: usage,
+            trash_bytes: trash_size_for(&mount),
         });
     }
 
@@ -76,5 +77,52 @@ pub fn get_system_status() -> SystemStatus {
         disks,
         user_dirs,
         version: VERSION.into(),
+    }
+}
+
+/// Recursive size of a trash bin; 0 when inaccessible (permissions, missing).
+fn dir_size(root: &std::path::Path) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(p) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&p) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let path = e.path();
+            if path.is_dir() && !path.is_symlink() {
+                total += dir_size(&path);
+            } else if let Ok(m) = e.metadata() {
+                total += m.len();
+            }
+        }
+    }
+    total
+}
+
+fn trash_size_for(mount: &str) -> u64 {
+    #[cfg(windows)]
+    {
+        dir_size(&std::path::Path::new(mount).join("$Recycle.Bin"))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // XDG trash lives on the home volume only.
+        dirs::data_dir()
+            .map(|d| (d.join("Trash").join("files"), mount))
+            .filter(|(trash, _)| trash.exists())
+            .map(|(trash, _)| dir_size(&trash))
+            .unwrap_or(0)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        dirs::home_dir()
+            .map(|h| dir_size(&h.join(".Trash")))
+            .unwrap_or(0)
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    {
+        let _ = mount;
+        0
     }
 }

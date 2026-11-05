@@ -97,6 +97,8 @@ Add to your MCP client config (e.g., Claude Desktop `claude_desktop_config.json`
 
 > On macOS/Linux: `"command": "/usr/local/bin/disk-cleaner-mcp"`
 
+> **macOS Gatekeeper**: release binaries are ad-hoc signed. If macOS still blocks the downloaded binary, allow it once: `xattr -d com.apple.quarantine disk-cleaner-mcp`.
+
 ---
 
 ## 🧹 Workflow

@@ -19,6 +19,9 @@ use std::path::Path;
 /// are reported as candidates but skipped to bound I/O. `ponytail:` upgrade =
 /// chunked/partial hashing if users ask for >4GB dedup.
 const MAX_HASH_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+/// Head stage reads only this many bytes + length, so large same-size
+/// non-duplicates cost 64KB I/O instead of full file reads.
+const HEAD_HASH_BYTES: usize = 64 * 1024;
 /// Extension shown for files with no extension.
 const NO_EXT: &str = "(none)";
 
@@ -234,6 +237,23 @@ fn hash_file(path: &str) -> Option<String> {
     Some(safety::hex::encode(hasher.finalize()))
 }
 
+/// Hash only first HEAD_HASH_BYTES + file length (cheap prefilter).
+fn hash_file_head(path: &str, size: u64) -> Option<String> {
+    let p = Path::new(path);
+    let meta = std::fs::metadata(p).ok()?;
+    if !meta.is_file() || meta.len() > MAX_HASH_BYTES {
+        return None;
+    }
+    let mut f = std::fs::File::open(p).ok()?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; HEAD_HASH_BYTES];
+    let n = f.read(&mut buf).ok()?;
+    let read = &buf[..std::cmp::min(n, size as usize)];
+    hasher.update(read);
+    hasher.update(size.to_le_bytes());
+    Some(safety::hex::encode(hasher.finalize()))
+}
+
 /// Find byte-identical duplicate files within a scan.
 ///
 /// Cheap prefilter by size (no disk reads), then parallel streaming SHA-256
@@ -262,13 +282,32 @@ pub fn find_duplicates(
         by_size.into_values().filter(|g| g.len() >= 2).collect();
     let candidate_files: u64 = groups_by_size.iter().map(|g| g.len() as u64).sum();
 
-    // hash every file that shares a size with another, in parallel
-    let hashed: Vec<(&ScanEntry, Option<String>)> = groups_by_size
+    // Stage 1 (cheap): head hash (first 64KB + length) — full-hash only
+    // head collisions. Files <= HEAD bytes: head read == whole file, but
+    // length salt keeps it distinct from full hash; full-hash them anyway
+    // when colliding (small files, cheap).
+    let heads: Vec<(&ScanEntry, Option<String>)> = groups_by_size
+        .par_iter()
+        .flat_map(|g| g.par_iter().map(|e| (*e, hash_file_head(&e.path, e.size))))
+        .collect();
+    let mut by_head: HashMap<(u64, String), Vec<&ScanEntry>> = HashMap::new();
+    let mut head_failed = 0u64;
+    for (e, h) in heads {
+        if let Some(h) = h {
+            by_head.entry((e.size, h)).or_default().push(e);
+        } else {
+            head_failed += 1;
+        }
+    }
+    // Stage 2 (exact): full SHA-256 only for head-collision groups.
+    let colliding: Vec<Vec<&ScanEntry>> = by_head.into_values().filter(|g| g.len() >= 2).collect();
+    let hashed: Vec<(&ScanEntry, Option<String>)> = colliding
         .par_iter()
         .flat_map(|g| g.par_iter().map(|e| (*e, hash_file(&e.path))))
         .collect();
     let hashed_files = hashed.iter().filter(|(_, h)| h.is_some()).count() as u64;
-    let unreadable_files = candidate_files - hashed_files;
+    let full_failed = hashed.len() as u64 - hashed_files;
+    let unreadable_files = head_failed + full_failed;
 
     // final grouping by (size, hash)
     let mut by_hash: HashMap<(u64, String), Vec<&ScanEntry>> = HashMap::new();

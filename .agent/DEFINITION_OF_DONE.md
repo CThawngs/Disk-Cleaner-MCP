@@ -10,7 +10,7 @@ Mọi phiên báo "xong" PHẢI vượt qua, theo thứ tự:
 
 ## Test
 - [ ] `cargo test` — toàn bộ đơn vị test pass
-- [ ] Smoke test E2E qua MCP stdio (`python scripts/smoke_test.py`): initialize → tools/list → get_system_status → scan fixture → analyze → delete (trash + permanent) → protected-path rejection → token mismatch rejection
+- [ ] Smoke test E2E qua MCP stdio (`python smoke_test.py`): initialize → tools/list → get_system_status → scan fixture → analyze → delete (trash + permanent) → protected-path rejection → token mismatch rejection
 
 ## An toàn
 - [ ] SecurityGuard unit test pass: chặn `C:\Windows\System32`, `/usr/bin`, `pagefile.sys`…

@@ -187,6 +187,8 @@ pub fn analyze_entries(entries: &[ScanEntry], req: &AnalyzeRequest) -> (Vec<Scan
         .unwrap_or_default()
         .as_secs() as i64;
 
+    let glob_pat = req.name_glob.as_ref().and_then(|s| Pattern::new(s).ok());
+
     let mut filtered: Vec<ScanEntry> = entries
         .iter()
         .filter(|e| {
@@ -218,7 +220,7 @@ pub fn analyze_entries(entries: &[ScanEntry], req: &AnalyzeRequest) -> (Vec<Scan
             // Min age days
             if let Some(min_age) = req.min_age_days {
                 if let Some(modified) = e.modified {
-                    let age_days = ((now - modified) / 86400) as u32;
+                    let age_days = ((now - modified).max(0) / 86400) as u32;
                     if age_days < min_age {
                         return false;
                     }
@@ -227,15 +229,13 @@ pub fn analyze_entries(entries: &[ScanEntry], req: &AnalyzeRequest) -> (Vec<Scan
                 }
             }
             // Name glob
-            if let Some(glob_str) = &req.name_glob {
-                if let Ok(pattern) = Pattern::new(glob_str) {
-                    let name = Path::new(&e.path)
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    if !pattern.matches(&name) {
-                        return false;
-                    }
+            if let Some(pattern) = &glob_pat {
+                let name = Path::new(&e.path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if !pattern.matches(&name) {
+                    return false;
                 }
             }
             true

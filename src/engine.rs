@@ -6,14 +6,16 @@ use crate::model::*;
 use crate::safety;
 use jwalk::{Parallelism, WalkDirGeneric};
 use rayon::prelude::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_SCAN_ENTRIES: usize = 200_000;
 
 /// One scan session.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ScanSession {
     pub scan_id: String,
     pub salt: String,
@@ -22,32 +24,88 @@ pub struct ScanSession {
 }
 
 pub struct ScanEngine {
-    sessions: Vec<Arc<ScanSession>>,
+    sessions: RwLock<HashMap<String, Arc<ScanSession>>>,
+    order: RwLock<VecDeque<String>>,
 }
 
 impl ScanEngine {
     pub fn new() -> Self {
         Self {
-            sessions: Vec::new(),
+            sessions: RwLock::new(HashMap::new()),
+            order: RwLock::new(VecDeque::new()),
         }
     }
 
     pub fn get_session(&self, scan_id: &str) -> Option<Arc<ScanSession>> {
-        self.sessions.iter().find(|s| s.scan_id == scan_id).cloned()
+        if let Some(s) = self
+            .sessions
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(scan_id)
+            .cloned()
+        {
+            return Some(s);
+        }
+        // Reload persisted snapshot after process restart (best-effort).
+        let loaded = Self::load_session(scan_id)?;
+        let arc = Arc::new(loaded);
+        {
+            let mut sessions = self.sessions.write().unwrap_or_else(|e| e.into_inner());
+            sessions.insert(scan_id.to_string(), arc.clone());
+        }
+        Some(arc)
     }
 
-    fn push_session(&mut self, session: ScanSession) -> Arc<ScanSession> {
+    fn snapshot_dir() -> Option<PathBuf> {
+        dirs::data_dir().map(|d| d.join("disk-cleaner-mcp").join("snapshots"))
+    }
+
+    fn save_session(session: &ScanSession) {
+        if let Some(dir) = Self::snapshot_dir() {
+            if std::fs::create_dir_all(&dir).is_ok() {
+                let file = dir.join(format!("{}.json", session.scan_id));
+                if let Ok(json) = serde_json::to_string(session) {
+                    let _ = std::fs::write(file, json);
+                }
+            }
+        }
+    }
+
+    fn load_session(scan_id: &str) -> Option<ScanSession> {
+        // scan_id is engine-generated hex; reject path traversal anyway.
+        if scan_id
+            .chars()
+            .any(|c| !(c.is_ascii_hexdigit() || c == '-'))
+        {
+            return None;
+        }
+        let file = Self::snapshot_dir()?.join(format!("{scan_id}.json"));
+        let json = std::fs::read_to_string(file).ok()?;
+        serde_json::from_str(&json).ok()
+    }
+
+    fn push_session(&self, session: ScanSession) -> Arc<ScanSession> {
+        Self::save_session(&session);
         let arc = Arc::new(session);
-        self.sessions.push(arc.clone());
-        // Keep max 3 sessions (LRU-ish)
-        while self.sessions.len() > 3 {
-            self.sessions.remove(0);
+        {
+            let mut sessions = self.sessions.write().unwrap_or_else(|e| e.into_inner());
+            let mut order = self.order.write().unwrap_or_else(|e| e.into_inner());
+            if !sessions.contains_key(&arc.scan_id) {
+                order.push_back(arc.scan_id.clone());
+            }
+            sessions.insert(arc.scan_id.clone(), arc.clone());
+            // ponytail: keep max 3 sessions; evict oldest (FIFO)
+            while order.len() > 3 {
+                if let Some(old) = order.pop_front() {
+                    sessions.remove(&old);
+                }
+            }
         }
         arc
     }
 
     /// Run a scan at `root`. Returns a summary + populates cache.
-    pub fn scan(&mut self, root: &Path) -> Result<ScanResult, String> {
+    pub fn scan(&self, root: &Path) -> Result<ScanResult, String> {
         if !root.exists() {
             return Err(format!("Root path does not exist: {}", root.display()));
         }
@@ -93,17 +151,19 @@ impl ScanEngine {
                     }
 
                     let path = dir_entry.path();
-                    let name = dir_entry.file_name.to_string_lossy().to_string();
 
-                    // Prune skip dirs
+                    // Prune skip dirs: drop entry if it is a skip dir or lives
+                    // under one (any ancestor component matches). ponytail:
+                    // jwalk 0.9 parallel iterator can't prune natively, so
+                    // filter here — children of a skip dir never become entries.
+                    let in_skip = path
+                        .components()
+                        .any(|c| safety::should_skip_dir(&c.as_os_str().to_string_lossy()));
+                    if in_skip {
+                        continue;
+                    }
                     if dir_entry.file_type.is_dir() {
                         dirs_scanned += 1;
-                        if safety::should_skip_dir(&name) {
-                            // skip reading children
-                            // jwalk: we can't easily prune here without custom client_state,
-                            // so we just continue and skip via depth check
-                            continue;
-                        }
                     } else {
                         files_scanned += 1;
                     }
@@ -298,21 +358,9 @@ impl ScanEngine {
                 continue;
             }
 
-            // 2) Safety guard — protected path
+            // 2+3b) Verify target at action time (TOCTOU guard): rejects
+            // symlinks, symlinked ancestors, and protected canonical paths.
             let path = Path::new(&item.path);
-            if safety::is_protected(path) {
-                outcomes.push(DeleteOutcome {
-                    path: item.path.clone(),
-                    status: "rejected".into(),
-                    message: Some(
-                        "Path is system-protected. Operation BLOCKED by Safety Guard.".into(),
-                    ),
-                });
-                rejected += 1;
-                continue;
-            }
-
-            // 3) Verify token
             if !safety::verify_token(&session.salt, &item.path, &item.approval_token) {
                 outcomes.push(DeleteOutcome {
                     path: item.path.clone(),
@@ -325,24 +373,37 @@ impl ScanEngine {
                 rejected += 1;
                 continue;
             }
-
-            // 3b) Path must still exist on disk (e.g. not already moved by organize).
-            if !path.exists() {
-                outcomes.push(DeleteOutcome {
-                    path: item.path.clone(),
-                    status: "not_found".into(),
-                    message: Some(
-                        "Path no longer exists on disk (may have been moved/deleted already). Re-run scan."
-                            .into(),
-                    ),
-                });
-                errors += 1;
-                continue;
-            }
+            let canon = match safety::verify_safe_target(path) {
+                Ok(c) => c,
+                Err(msg) => {
+                    let status = if msg.contains("protected") {
+                        "rejected"
+                    } else {
+                        "error"
+                    };
+                    if status == "rejected" {
+                        rejected += 1;
+                    } else {
+                        errors += 1;
+                    }
+                    outcomes.push(DeleteOutcome {
+                        path: item.path.clone(),
+                        status: status.into(),
+                        message: Some(msg),
+                    });
+                    continue;
+                }
+            };
+            let path = canon.as_path();
 
             // 4) Execute delete: trash or permanent
             if req.permanent {
-                match std::fs::remove_file(path) {
+                let remove = if path.is_dir() {
+                    std::fs::remove_dir_all(path)
+                } else {
+                    std::fs::remove_file(path)
+                };
+                match remove {
                     Ok(_) => {
                         outcomes.push(DeleteOutcome {
                             path: item.path.clone(),
@@ -352,31 +413,21 @@ impl ScanEngine {
                         permanent += 1;
                     }
                     Err(e) => {
-                        // Try remove_dir if it's a dir
-                        match std::fs::remove_dir_all(path) {
-                            Ok(_) => {
-                                outcomes.push(DeleteOutcome {
-                                    path: item.path.clone(),
-                                    status: "permanent".into(),
-                                    message: None,
-                                });
-                                permanent += 1;
-                            }
-                            Err(e2) => {
-                                outcomes.push(DeleteOutcome {
-                                    path: item.path.clone(),
-                                    status: "error".into(),
-                                    message: Some(format!("Delete failed: {} / {}", e, e2)),
-                                });
-                                errors += 1;
-                            }
-                        }
+                        outcomes.push(DeleteOutcome {
+                            path: item.path.clone(),
+                            status: "error".into(),
+                            message: Some(format!("Delete failed: {}", e)),
+                        });
+                        errors += 1;
                     }
                 }
             } else {
-                // Trash on a dedicated OS thread (Windows COM apartment safety)
+                // Trash on a dedicated OS thread (Windows COM apartment safety);
+                // headless Linux/macOS falls back to XDG Trash / ~/.Trash.
                 let path_clone = path.to_path_buf();
-                match trash_delete_on_thread(path_clone) {
+                let moved = trash_delete_on_thread(path_clone.clone())
+                    .or_else(|_| trash_fallback(&path_clone));
+                match moved {
                     Ok(_) => {
                         outcomes.push(DeleteOutcome {
                             path: item.path.clone(),
@@ -434,30 +485,41 @@ impl ScanEngine {
         };
 
         let dest = PathBuf::from(&req.dest_dir);
-        if !dest.exists() || !dest.is_dir() {
-            return OrganizeResult {
-                scan_id: req.scan_id.clone(),
-                moved: 0,
-                dry_run: 0,
-                skipped: 0,
-                rejected: 0,
-                errors: 1,
-                outcomes: vec![OrganizeOutcome {
-                    path: "(dest)".into(),
-                    status: "error".into(),
-                    dest: None,
-                    message: Some(format!(
-                        "Destination directory does not exist or is not a directory: {}",
-                        req.dest_dir
-                    )),
-                }],
-            };
-        }
-
-        // Note: intentionally NOT canonicalizing dest — on Windows canonicalize
-        // adds the `\\?\` extended-length prefix, which breaks std::fs::rename
-        // between normal and extended paths. dest was already validated above.
-        let dest_canon = dest.clone();
+        let dest_canon = match safety::verify_safe_target(&dest) {
+            Ok(c) if c.is_dir() => c,
+            Ok(_) => {
+                return OrganizeResult {
+                    scan_id: req.scan_id.clone(),
+                    moved: 0,
+                    dry_run: 0,
+                    skipped: 0,
+                    rejected: 0,
+                    errors: 1,
+                    outcomes: vec![OrganizeOutcome {
+                        path: "(dest)".into(),
+                        status: "error".into(),
+                        dest: None,
+                        message: Some(format!("Destination is not a directory: {}", req.dest_dir)),
+                    }],
+                };
+            }
+            Err(msg) => {
+                return OrganizeResult {
+                    scan_id: req.scan_id.clone(),
+                    moved: 0,
+                    dry_run: 0,
+                    skipped: 0,
+                    rejected: 0,
+                    errors: 1,
+                    outcomes: vec![OrganizeOutcome {
+                        path: "(dest)".into(),
+                        status: "error".into(),
+                        dest: None,
+                        message: Some(format!("Destination rejected: {msg}")),
+                    }],
+                };
+            }
+        };
         let strategy = req.strategy.clone().unwrap_or(OrganizeStrategy::Category);
 
         let mut moved = 0u32;
@@ -488,22 +550,7 @@ impl ScanEngine {
                 }
             };
 
-            // 2) protected?
-            let src = Path::new(&item.path);
-            if safety::is_protected(src) {
-                outcomes.push(OrganizeOutcome {
-                    path: item.path.clone(),
-                    status: "rejected".into(),
-                    dest: None,
-                    message: Some(
-                        "Path is system-protected. Operation BLOCKED by Safety Guard.".into(),
-                    ),
-                });
-                rejected += 1;
-                continue;
-            }
-
-            // 3) token?
+            // 2) token?
             if !safety::verify_token(&session.salt, &item.path, &item.approval_token) {
                 outcomes.push(OrganizeOutcome {
                     path: item.path.clone(),
@@ -517,6 +564,32 @@ impl ScanEngine {
                 rejected += 1;
                 continue;
             }
+
+            // 2b) Verify source at action time (TOCTOU guard): rejects symlinks,
+            // symlinked ancestors, protected canonical paths. Use canonical path.
+            let src_canon = match safety::verify_safe_target(Path::new(&item.path)) {
+                Ok(c) => c,
+                Err(msg) => {
+                    let status = if msg.contains("protected") {
+                        "rejected"
+                    } else {
+                        "error"
+                    };
+                    if status == "rejected" {
+                        rejected += 1;
+                    } else {
+                        errors += 1;
+                    }
+                    outcomes.push(OrganizeOutcome {
+                        path: item.path.clone(),
+                        status: status.into(),
+                        dest: None,
+                        message: Some(msg),
+                    });
+                    continue;
+                }
+            };
+            let src = src_canon.as_path();
 
             // 4) Do not organize directories recursively (only files + empty dirs handled later)
             if entry.kind == "dir" {
@@ -665,6 +738,128 @@ fn trash_delete_on_thread(path: PathBuf) -> Result<(), trash::Error> {
     result
 }
 
+/// Headless fallback when the `trash` crate fails (no D-Bus/Gio on Linux
+/// servers, no Finder on macOS SSH): move into XDG Trash / ~/.Trash directly.
+/// Windows keeps the COM path only — per-SID Recycle.Bin layout is complex.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn trash_fallback(path: &Path) -> Result<(), trash::Error> {
+    fn unique_dest(dir: &Path, name: &str) -> PathBuf {
+        let base = Path::new(name);
+        let mut cand = dir.join(base);
+        let mut i = 1;
+        while cand.exists() {
+            cand = dir.join(format!("{name}.{i}"));
+            i += 1;
+        }
+        cand
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let data = dirs::data_dir().ok_or_else(|| trash::Error::Unknown {
+            description: "No XDG data dir for fallback trash".into(),
+        })?;
+        let files = data.join("Trash").join("files");
+        let info = data.join("Trash").join("info");
+        std::fs::create_dir_all(&files)
+            .and(std::fs::create_dir_all(&info))
+            .map_err(|e| trash::Error::Unknown {
+                description: format!("Trash dirs: {e}"),
+            })?;
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "trashed".into());
+        let dest = unique_dest(&files, &name);
+        let info_file = info.join(format!(
+            "{}.trashinfo",
+            dest.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::write(
+            &info_file,
+            format!(
+                "[Trash Info]\nPath={}\nDeletionDate={}\n",
+                // ponytail: minimal URL-encoding (spaces) — full RFC3986 not needed for common paths.
+                dest.to_string_lossy().replace(' ', "%20"),
+                chrono_like_now(),
+            ),
+        )
+        .map_err(|e| trash::Error::Unknown {
+            description: format!("trashinfo: {e}"),
+        })?;
+        std::fs::rename(path, &dest).map_err(|e| trash::Error::Unknown {
+            description: format!("fallback move: {e}"),
+        })?;
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = dirs::home_dir().ok_or_else(|| trash::Error::Unknown {
+            description: "No home dir for fallback trash".into(),
+        })?;
+        let trash_dir = home.join(".Trash");
+        std::fs::create_dir_all(&trash_dir).map_err(|e| trash::Error::Unknown {
+            description: format!("~/.Trash: {e}"),
+        })?;
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "trashed".into());
+        let dest = unique_dest(&trash_dir, &name);
+        std::fs::rename(path, &dest).map_err(|e| trash::Error::Unknown {
+            description: format!("fallback move: {e}"),
+        })?;
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    Err(trash::Error::Unknown {
+        description: "Trash failed and no fallback available.".into(),
+    })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn trash_fallback(_path: &Path) -> Result<(), trash::Error> {
+    Err(trash::Error::Unknown {
+        description: "Trash failed and no fallback available.".into(),
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn chrono_like_now() -> String {
+    // Cheap local timestamp without chrono dep; seconds since epoch UTC.
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // DeletionDate in .trashinfo wants local "YYYY-MM-DDTHH:MM:SS"; UTC is acceptable to freedesktop tools.
+    let days = (secs / 86400) as i64;
+    let (y, m, d) = civil_from_days(days);
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+        y,
+        m,
+        d,
+        (secs / 3600) % 24,
+        (secs / 60) % 60,
+        secs % 60
+    )
+}
+
+/// Howard Hinnant's civil-from-days algorithm.
+#[cfg(target_os = "linux")]
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
 fn category_label_for(key: &str) -> String {
     analytics::all_categories()
         .iter()
@@ -674,11 +869,13 @@ fn category_label_for(key: &str) -> String {
 }
 
 fn generate_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    format!("scan-{}-{:04}", now.as_secs(), (now.subsec_nanos() % 10000))
+    // ponytail: 64-bit CSPRNG id; collision ~impossible, no time dependency.
+    let mut bytes = [0u8; 8];
+    getrandom::fill(&mut bytes).expect("CSPRNG unavailable");
+    format!(
+        "scan-{}",
+        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    )
 }
 
 #[cfg(test)]
@@ -688,12 +885,12 @@ mod tests {
     #[test]
     fn test_scan_engine_new() {
         let engine = ScanEngine::new();
-        assert!(engine.sessions.is_empty());
+        assert!(engine.sessions.read().unwrap().is_empty());
     }
 
     #[test]
     fn test_scan_nonexistent() {
-        let mut engine = ScanEngine::new();
+        let engine = ScanEngine::new();
         let result = engine.scan(Path::new("/this/does/not/exist/abc123"));
         assert!(result.is_err());
     }
@@ -708,7 +905,7 @@ mod tests {
     fn test_scan_and_delete_protected_rejected() {
         // We can't test scanning C:\Windows directly (permissions),
         // but we can test the delete rejection logic with a mock token.
-        let mut engine = ScanEngine::new();
+        let engine = ScanEngine::new();
         // Create a temp dir, scan it, then try to delete with a fake "protected" path
         let temp = std::env::temp_dir().join("dc-mcp-test-scan-1");
         std::fs::create_dir_all(&temp).unwrap();
@@ -746,7 +943,7 @@ mod tests {
 
     #[test]
     fn test_delete_token_mismatch_rejected() {
-        let mut engine = ScanEngine::new();
+        let engine = ScanEngine::new();
         let temp = std::env::temp_dir().join("dc-mcp-test-scan-2");
         std::fs::create_dir_all(&temp).unwrap();
         let test_file = temp.join("test2.log");
@@ -778,7 +975,7 @@ mod tests {
 
     #[test]
     fn test_delete_permanent_requires_confirmation() {
-        let mut engine = ScanEngine::new();
+        let engine = ScanEngine::new();
         let temp = std::env::temp_dir().join("dc-mcp-test-scan-3");
         std::fs::create_dir_all(&temp).unwrap();
         let test_file = temp.join("test3.log");
@@ -810,7 +1007,7 @@ mod tests {
 
     #[test]
     fn test_delete_permanent_with_confirmation() {
-        let mut engine = ScanEngine::new();
+        let engine = ScanEngine::new();
         let temp = std::env::temp_dir().join("dc-mcp-test-scan-4");
         std::fs::create_dir_all(&temp).unwrap();
         let test_file = temp.join("test4.log");
@@ -861,7 +1058,7 @@ mod tests {
     #[test]
     fn test_organize_moves_by_category() {
         let (src, dest) = setup_organize_fixture("moves");
-        let mut engine = ScanEngine::new();
+        let engine = ScanEngine::new();
         let result = engine.scan(&src).unwrap();
         let session = engine.get_session(&result.summary.scan_id).unwrap();
 
@@ -917,7 +1114,7 @@ mod tests {
     #[test]
     fn test_organize_dry_run_moves_nothing() {
         let (src, dest) = setup_organize_fixture("dryrun");
-        let mut engine = ScanEngine::new();
+        let engine = ScanEngine::new();
         let result = engine.scan(&src).unwrap();
         let session = engine.get_session(&result.summary.scan_id).unwrap();
 
@@ -952,7 +1149,7 @@ mod tests {
     #[test]
     fn test_organize_wrong_token_rejected() {
         let (src, dest) = setup_organize_fixture("wrongtoken");
-        let mut engine = ScanEngine::new();
+        let engine = ScanEngine::new();
         let result = engine.scan(&src).unwrap();
         let session = engine.get_session(&result.summary.scan_id).unwrap();
         let entry = session
@@ -984,7 +1181,7 @@ mod tests {
     #[test]
     fn test_organize_nonexistent_dest_errors() {
         let (src, dest) = setup_organize_fixture("nodest");
-        let mut engine = ScanEngine::new();
+        let engine = ScanEngine::new();
         let result = engine.scan(&src).unwrap();
         let session = engine.get_session(&result.summary.scan_id).unwrap();
 
@@ -1015,7 +1212,7 @@ mod tests {
     #[test]
     fn test_organize_skips_existing_dest() {
         let (src, dest) = setup_organize_fixture("skipdest");
-        let mut engine = ScanEngine::new();
+        let engine = ScanEngine::new();
         let result = engine.scan(&src).unwrap();
         let session = engine.get_session(&result.summary.scan_id).unwrap();
         let entry = session

@@ -25,23 +25,26 @@ jobs:
             ext: ""
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
         with:
           key: ${{ matrix.target }}
       - name: Build release
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Ad-hoc sign macOS binary (Gatekeeper-friendly, no cert needed)
+        if: matrix.os == 'macos-latest'
+        run: codesign --force --sign - target/${{ matrix.target }}/release/disk-cleaner-mcp && codesign --verify target/${{ matrix.target }}/release/disk-cleaner-mcp
       - name: Rename binary with target suffix
         shell: bash
         run: |
           mv target/${{ matrix.target }}/release/disk-cleaner-mcp${{ matrix.ext }} \
              target/${{ matrix.target }}/release/disk-cleaner-mcp-${{ matrix.target }}${{ matrix.ext }}
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: disk-cleaner-mcp-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/disk-cleaner-mcp-${{ matrix.target }}${{ matrix.ext }}
@@ -52,17 +55,22 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
           merge-multiple: true
-      - name: Include install.sh (README curl | bash quick start)
-        run: cp install.sh artifacts/
+      - name: Include installers (README curl | bash / irm quick start)
+        run: cp install.sh install.ps1 artifacts/
+      - name: Generate SHA256 checksums
+        run: |
+          cd artifacts
+          sha256sum disk-cleaner-mcp-* install.sh install.ps1 > checksums.txt
+          cat checksums.txt
       - name: Show artifacts
         run: ls -la artifacts/
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: artifacts/*
           generate_release_notes: true

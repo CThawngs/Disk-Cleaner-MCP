@@ -31,7 +31,27 @@ else
   URL="https://github.com/${OWNER}/${REPO}/releases/download/${VERSION}/disk-cleaner-mcp-${TARGET}"
 fi
 echo "Downloading $URL ..."
-curl -fsSL "$URL" -o "$BIN"
+curl -fsSL "$URL" -o "$BIN.tmp"
+# Verify SHA256 against release checksums (supply-chain integrity)
+if command -v sha256sum >/dev/null 2>&1; then HASH_CMD="sha256sum"; \
+elif command -v shasum >/dev/null 2>&1; then HASH_CMD="shasum -a 256"; else HASH_CMD=""; fi
+if [ -z "$HASH_CMD" ]; then echo "sha256sum/shasum missing — refusing install" >&2; exit 1; fi
+if [ "$VERSION" = "latest" ]; then
+  SUM_URL="https://github.com/${OWNER}/${REPO}/releases/latest/download/checksums.txt"
+else
+  SUM_URL="https://github.com/${OWNER}/${REPO}/releases/download/${VERSION}/checksums.txt"
+fi
+SUM_TMP="$(mktemp)"
+trap 'rm -f "$SUM_TMP" "$BIN.tmp"' EXIT
+curl -fsSL "$SUM_URL" -o "$SUM_TMP"
+EXPECTED="$(grep "disk-cleaner-mcp-${TARGET}$" "$SUM_TMP" | awk '{print $1}')"
+if [ -z "$EXPECTED" ]; then echo "checksums.txt missing entry for $TARGET" >&2; exit 1; fi
+ACTUAL="$($HASH_CMD "$BIN.tmp" | awk '{print $1}')"
+if [ "$EXPECTED" != "$ACTUAL" ]; then echo "checksum mismatch (expected $EXPECTED, got $ACTUAL)" >&2; exit 1; fi
+echo "Checksum OK: $ACTUAL"
+rm -f "$SUM_TMP"
+trap - EXIT
+mv "$BIN.tmp" "$BIN"
 chmod +x "$BIN"
 
 echo

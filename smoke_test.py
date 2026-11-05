@@ -11,7 +11,15 @@ import sys
 import tempfile
 import time
 
-BIN = sys.argv[1] if len(sys.argv) > 1 else r"target/release/disk-cleaner-mcp.exe"
+import platform
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+BIN = sys.argv[1] if len(sys.argv) > 1 else (
+    r"target/release/disk-cleaner-mcp.exe" if platform.system() == "Windows"
+    else "target/release/disk-cleaner-mcp"
+)
 
 # ---- JSON-RPC helpers ----
 class MCPServer:
@@ -72,7 +80,12 @@ def main():
     tools = resp["result"]["tools"]
     names = [t["name"] for t in tools]
     print(f"  ✤ tools: {names}")
-    assert "scan" in names and "delete" in names
+    EXPECTED_TOOLS = {
+        "get_system_status", "list_categories", "scan", "analyze", "get_tree",
+        "file_types", "find_duplicates", "compare_scans", "organize",
+        "delete", "get_report",
+    }
+    assert EXPECTED_TOOLS <= set(names), f"missing tools: {EXPECTED_TOOLS - set(names)} (got {names})"
 
     # 3. get_system_status
     resp = srv.request("tools/call", {

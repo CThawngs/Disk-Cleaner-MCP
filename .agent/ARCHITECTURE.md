@@ -47,13 +47,13 @@
 | `safety.rs` | SecurityGuard: blocklist, normalize, verify token, protected check |
 | `analytics.rs` | Lọc/sort/phân trang/glob/insights/report markdown |
 | `insights.rs` | TreeSize-grade analytics: folder tree, file types, duplicate finder, scan diff |
-| `dirs.rs` | System status, standard dirs per OS |
+| `sysinfo_helper.rs` | System status, standard dirs per OS |
 | `model.rs` | Các struct serde (ScanEntry, ScanSummary…) |
 
 ### Insights (TreeSize-grade, v0.2 — src/insights.rs)
 - `get_tree`: roll size mỗi file lên toàn bộ ancestor → node giữ recursive size; children sort size desc, truncate `top` + rollup "(+N more)" giữ tổng chính xác.
 - `file_types`: group extension → (count, size), sort size desc.
-- `find_duplicates`: prefilter theo size (không đọc đĩa) → hash song song (rayon) CHỈ file cùng size → group theo (size, sha256). Bỏ qua file >4GB (cap I/O) + protected. Mỗi file trả kèm approvalToken → AI xóa bản thừa qua luồng delete an toàn. `files` oldest-first.
+- `find_duplicates`: prefilter theo size → head hash 64KB+len → full SHA-256 CHỈ nhóm trùng head → group theo (size, sha256). Bỏ qua file >4GB (cap I/O) + protected. Mỗi file trả kèm approvalToken → AI xóa bản thừa qua luồng delete an toàn. `files` oldest-first.
 - `compare_scans`: build snapshot in-memory từ 2 session sống (LRU 3), diff theo path: added/removed/changed + netDelta. KHÔNG persist đĩa (quét lại nếu session bị evict).
 - Tất cả read-only, không cần token, không sửa Safety Guard.
 

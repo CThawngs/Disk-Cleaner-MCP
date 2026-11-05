@@ -12,6 +12,7 @@ categories = ["filesystem", "development-tools"]
 [dependencies]
 anyhow = "1.0"
 dirs = "6.0"
+getrandom = "0.3"
 glob = "0.3"
 jwalk = "0.9"
 rayon = "1.12"

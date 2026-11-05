@@ -189,6 +189,8 @@ pub struct DiskInfo {
     pub used_bytes: u64,
     pub available_bytes: u64,
     pub usage_percent: f64,
+    /// Bytes sitting in the OS trash/recycle bin on this volume (best-effort).
+    pub trash_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
