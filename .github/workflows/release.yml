@@ -85,13 +85,20 @@ jobs:
           merge-multiple: true
       - name: Include installers (README curl | bash / irm quick start)
         run: cp install.sh install.ps1 artifacts/
+      - name: Flatten artifacts (upload preserves target/ tree)
+        shell: bash
+        run: |
+          find artifacts -type f -name "disk-cleaner-mcp-*" -exec cp -f {} artifacts/ \;
+          find artifacts -type f -name "sbom-*.json" -exec cp -f {} artifacts/ \;
+          find artifacts -type f -name "*.rpm" -exec cp -f {} artifacts/ \;
+          find artifacts -type f | sort
+      - name: Show artifacts
+        run: ls -la artifacts/
       - name: Generate SHA256 checksums
         run: |
           cd artifacts
           sha256sum disk-cleaner-mcp-* install.sh install.ps1 > checksums.txt
           cat checksums.txt
-      - name: Show artifacts
-        run: ls -la artifacts/
       - name: Create GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
