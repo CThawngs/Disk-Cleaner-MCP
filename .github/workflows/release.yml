@@ -49,12 +49,12 @@ jobs:
       - name: SBOM (cargo-cyclonedx)
         run: |
           cargo install cargo-cyclonedx --locked --quiet
-          cargo cyclonedx --locked --format json --override-filename sbom-${{ matrix.target }} --all-features || true
-      - name: RPM (Linux only)
-        if: runner.os == 'Linux'
+          cargo cyclonedx --format json --override-filename sbom-${{ matrix.target }}
+      - name: RPM (Linux x86_64 native only; cargo-rpm cannot cross-compile)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: |
           cargo install cargo-rpm --locked --quiet
-          cargo rpm --target ${{ matrix.target }} || true
+          cargo rpm
       - name: Ad-hoc sign macOS binary (Gatekeeper-friendly, no cert needed)
         if: runner.os == 'macOS'
         run: codesign --force --sign - target/${{ matrix.target }}/release/disk-cleaner-mcp && codesign --verify target/${{ matrix.target }}/release/disk-cleaner-mcp
@@ -70,7 +70,7 @@ jobs:
           path: |
             target/${{ matrix.target }}/release/disk-cleaner-mcp-${{ matrix.target }}${{ matrix.ext }}
             target/cyclonedx/sbom-${{ matrix.target }}.json
-            target/${{ matrix.target }}/release/*.rpm
+            target/release/*.rpm
 
   publish:
     needs: release
@@ -97,7 +97,7 @@ jobs:
       - name: Generate SHA256 checksums
         run: |
           cd artifacts
-          sha256sum disk-cleaner-mcp-* install.sh install.ps1 > checksums.txt
+          { sha256sum disk-cleaner-mcp-* install.sh install.ps1 2>/dev/null; sha256sum sbom-*.json *.rpm 2>/dev/null; } > checksums.txt
           cat checksums.txt
       - name: Create GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2

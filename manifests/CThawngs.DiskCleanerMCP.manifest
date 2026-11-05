@@ -1,9 +1,9 @@
-// Winget manifest template for disk-cleaner-mcp v0.4.0.
+// Winget manifest template for disk-cleaner-mcp v0.5.0.
 // To publish: submit to microsoft/winget-pkgs under
 // manifests/CThawngs/DiskCleanerMCP/<version>/, then bump PackageVersion,
 // InstallerUrl, and InstallerSha256 on each release.
 PackageIdentifier: CThawngs.DiskCleanerMCP
-PackageVersion: 0.4.0
+PackageVersion: 0.5.0
 PackageName: Disk Cleaner MCP
 Publisher: CThawngs
 License: MIT
@@ -19,8 +19,8 @@ Tags:
 InstallerType: portable
 Installers:
 - Architecture: x64
-  InstallerUrl: https://github.com/CThawngs/Disk-Cleaner-MCP/releases/download/v0.4.0/disk-cleaner-mcp-x86_64-pc-windows-msvc.exe
-  InstallerSha256: c455e0a51c9d5e79e36be5aebbedc8ebaafd56f415e79aa5f307210d083a782f
+  InstallerUrl: https://github.com/CThawngs/Disk-Cleaner-MCP/releases/download/v0.5.0/disk-cleaner-mcp-x86_64-pc-windows-msvc.exe
+  InstallerSha256: 42d70ec48f9d5402f2245551f2b27285f68111cecd349c97cbcddda826f7071c
   InstallerType: portable
 ManifestType: singleton
 ManifestVersion: 1.9.0
