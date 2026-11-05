@@ -1,0 +1,17 @@
+.TH DISK-CLEANER-MCP 1 "November 2026" "Disk Cleaner MCP 0.3.0"
+.SH NAME
+disk-cleaner-mcp \- Rust MCP server: fast safe disk cleanup for AI agents
+.SH SYNOPSIS
+disk-cleaner-mcp [--http [PORT]]
+.SH DESCRIPTION
+Serves MCP protocol over stdio (default). With --http (optional feature), serves Streamable HTTP on loopback (default port 8000) at /mcp.
+.SH OPTIONS
+.TP
+--http [PORT]
+Enable HTTP transport on 127.0.0.1. Default port 8000.
+.SH ENTIRONMENT
+.TP
+DISK_CLEANER_TELEMETRY
+Set to 1 to enable opt-in local metrics reporting. No network calls.
+.SH SAFETY
+Deletes go to Trash by default. Permanent delete requires permanent + confirmPermanent. All deletes require approvalToken per scan.

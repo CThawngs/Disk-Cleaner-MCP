@@ -77,6 +77,8 @@ pub fn get_system_status() -> SystemStatus {
         disks,
         user_dirs,
         version: VERSION.into(),
+        health: "ok".into(),
+        telemetry_enabled: std::env::var("DCM_TELEMETRY").is_ok(),
     }
 }
 

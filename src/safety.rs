@@ -291,6 +291,15 @@ pub fn verify_safe_target(path: &Path) -> Result<PathBuf, String> {
             if m.file_type().is_symlink() {
                 return Err("Target has a symlinked ancestor — refused.".into());
             }
+            // Windows junctions/mount points are reparse points, NOT symlinks.
+            // FILE_ATTRIBUTE_REPARSE_POINT = 0x400. Treat as unsafe aliasing.
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt;
+                if m.file_attributes() & 0x400 != 0 {
+                    return Err("Target has a junction/mount ancestor — refused.".into());
+                }
+            }
         }
     }
     if is_protected(&canon) {
@@ -319,6 +328,22 @@ pub mod hex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        #[test]
+        fn prop_should_skip_dir_case_insensitive(s in prop::sample::select(vec![".git", "node_modules", ".venv", ".cache", "__pycache__"])) {
+            prop_assert!(should_skip_dir(s));
+            prop_assert!(should_skip_dir(&s.to_uppercase()));
+        }
+        #[test]
+        fn prop_hex_roundtrip(bytes in proptest::collection::vec(0u8..=255, 0..32)) {
+            let encoded = hex::encode(&bytes);
+            prop_assert_eq!(encoded.len(), bytes.len() * 2);
+            prop_assert!(encoded.chars().all(|c| c.is_ascii_hexdigit()));
+        }
+    }
 
     #[cfg(windows)]
     #[test]

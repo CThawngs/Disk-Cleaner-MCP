@@ -102,7 +102,7 @@ pub struct DeleteRequest {
     #[serde(default)]
     pub confirm_risk: bool,
     /// Compute + report only; touch nothing on disk.
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub dry_run: bool,
 }
 
@@ -237,6 +237,17 @@ pub struct SystemStatus {
     pub disks: Vec<DiskInfo>,
     pub user_dirs: BTreeMap<String, String>,
     pub version: String,
+    #[serde(default = "default_health")]
+    pub health: String,
+    #[serde(default)]
+    pub telemetry_enabled: bool,
+}
+
+pub(crate) fn default_health() -> String {
+    "ok".into()
+}
+pub(crate) fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]

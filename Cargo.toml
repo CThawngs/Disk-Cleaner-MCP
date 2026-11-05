@@ -2,6 +2,7 @@
 name = "disk-cleaner-mcp"
 version = "0.3.0"
 edition = "2021"
+rust-version = "1.82"
 authors = ["Zero <nguyenchithang2804@gmail.com>"]
 license = "MIT"
 description = "Rust MCP server: fast safe disk cleanup for AI agents (Windows/macOS/Linux)"
@@ -37,6 +38,17 @@ http = ["dep:axum", "rmcp/transport-streamable-http-server"]
 version = "0.8"
 optional = true
 
+[package.metadata.rpm]
+assets = [
+    { source = "target/release/disk-cleaner-mcp", dest = "/usr/bin/disk-cleaner-mcp", mode = "0755" },
+    { source = "completions/disk-cleaner-mcp.bash", dest = "/usr/share/bash-completion/completions/disk-cleaner-mcp", mode = "0644" },
+    { source = "completions/disk-cleaner-mcp.zsh", dest = "/usr/share/zsh/site-functions/_disk-cleaner-mcp", mode = "0644" },
+    { source = "disk-cleaner-mcp.1", dest = "/usr/share/man/man1/disk-cleaner-mcp.1", mode = "0644" }
+]
+
+[package.metadata.rpm.signing]
+generate_key = false
+
 [profile.release]
 opt-level = 3
 lto = "thin"
@@ -53,4 +65,10 @@ section = "utils"
 assets = [
     ["target/release/disk-cleaner-mcp", "usr/bin/", "755"],
     ["README.md", "usr/share/doc/disk-cleaner-mcp/", "644"],
+    ["disk-cleaner-mcp.1", "usr/share/man/man1/", "644"],
+    ["completions/disk-cleaner-mcp.bash", "usr/share/bash-completion/completions/", "644"],
+    ["completions/disk-cleaner-mcp.zsh", "usr/share/zsh/site-functions/", "644"],
 ]
+
+[dev-dependencies]
+proptest = "1.5"

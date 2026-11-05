@@ -459,8 +459,8 @@ pub struct DeleteParams {
     )]
     #[serde(default)]
     pub confirm_risk: bool,
-    #[schemars(description = "True → report what would be deleted, touch nothing.")]
-    #[serde(default)]
+    #[schemars(description = "True → report what would be deleted, touch nothing. Default true.")]
+    #[serde(default = "crate::model::default_true")]
     pub dry_run: bool,
 }
 
@@ -478,8 +478,8 @@ pub struct OrganizeParams {
     #[schemars(description = "Grouping strategy: 'category' (default) or 'extension'")]
     #[serde(default)]
     pub strategy: Option<OrganizeStrategy>,
-    #[schemars(description = "True → only plan moves, move nothing")]
-    #[serde(default)]
+    #[schemars(description = "True → only plan moves, move nothing. Default true.")]
+    #[serde(default = "crate::model::default_true")]
     pub dry_run: bool,
 }
 
