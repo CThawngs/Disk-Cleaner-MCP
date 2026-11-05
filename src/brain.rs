@@ -157,6 +157,14 @@ mod tests {
     use super::*;
     const NOW: i64 = 1_800_000_000;
 
+    fn p(name: &str) -> String {
+        std::env::temp_dir()
+            .join("dcm-brain-test")
+            .join(name)
+            .to_string_lossy()
+            .to_string()
+    }
+
     fn a(path: &str, size: u64, ext: Option<&str>, cat: &str) -> Assessment {
         assess(
             path,
@@ -171,44 +179,34 @@ mod tests {
 
     #[test]
     fn test_temp_junk_safe() {
-        let v = a(
-            "C:/Users/x/AppData/Local/Temp/junk.tmp",
-            10,
-            Some("tmp"),
-            "temp",
-        );
+        let v = a(&p("junk.tmp"), 10, Some("tmp"), "temp");
         assert_eq!(v.verdict, "safe_to_delete");
         assert_eq!(v.risk_level, "safe");
     }
 
     #[test]
     fn test_executable_keep() {
-        let v = a(
-            "C:/Users/x/newtool.exe",
-            5_000_000,
-            Some("exe"),
-            "installer",
-        );
+        let v = a(&p("newtool.exe"), 5_000_000, Some("exe"), "installer");
         assert_eq!(v.verdict, "keep");
         assert_eq!(v.risk_level, "dangerous");
     }
 
     #[test]
     fn test_config_keep() {
-        let v = a("C:/Users/x/app.ini", 200, Some("ini"), "other");
+        let v = a(&p("app.ini"), 200, Some("ini"), "other");
         assert_eq!(v.verdict, "keep");
     }
 
     #[test]
     fn test_big_other_review_not_safe() {
-        let v = a("C:/Users/x/movie.mkv", 3_000_000_000, Some("mkv"), "other");
+        let v = a(&p("movie.mkv"), 3_000_000_000, Some("mkv"), "other");
         assert_ne!(v.verdict, "safe_to_delete");
     }
 
     #[test]
     fn test_recent_caution() {
         let v = assess(
-            "C:/Users/x/a.log",
+            &p("a.log"),
             100,
             Some(NOW),
             &Some("log".into()),
@@ -223,9 +221,9 @@ mod tests {
 
     #[test]
     fn test_duplicate_lowers_importance() {
-        let plain = a("C:/Users/x/a.dat", 1000, Some("dat"), "other");
+        let plain = a(&p("a.dat"), 1000, Some("dat"), "other");
         let dup = assess(
-            "C:/Users/x/a.dat",
+            &p("a.dat"),
             1000,
             Some(NOW - 90 * 86400),
             &Some("dat".into()),

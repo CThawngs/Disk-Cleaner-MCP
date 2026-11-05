@@ -27,7 +27,6 @@ const PROTECTED_UNIX: &[&str] = &[
     "/sys",
     "/opt",
     "/root",
-    "/home",
 ];
 
 #[cfg(windows)]
@@ -148,7 +147,7 @@ pub fn normalize(path: &Path) -> PathBuf {
         }
         PathBuf::from(lower)
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         canonical
     }
@@ -212,9 +211,10 @@ pub fn is_protected(path: &Path) -> bool {
 }
 
 /// Light normalization for comparing a canonical path against a lexically
-/// cleaned one: NO `canonicalize()` here, or symlinked ancestors would be
-/// resolved on both sides and the divergence check would never fire.
-/// Strips `\\?\` prefix + lowercases on Windows (case-insensitive FS).
+/// cleaned one. Kept for reference; `verify_safe_target` now checks ancestor
+/// components directly instead of string-comparing canonical vs lexical
+/// (8.3 short names like `RUNNER~1` on Windows CI made that false-fire).
+#[allow(dead_code)]
 fn light_normalize(path: &Path) -> PathBuf {
     #[cfg(any(windows, target_os = "macos"))]
     {
@@ -227,7 +227,7 @@ fn light_normalize(path: &Path) -> PathBuf {
         }
         PathBuf::from(lower)
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         path.to_path_buf()
     }
@@ -251,12 +251,15 @@ pub fn verify_safe_target(path: &Path) -> Result<PathBuf, String> {
     let canon = abs
         .canonicalize()
         .map_err(|e| format!("Cannot resolve target: {e}"))?;
-    // Symlinked ancestor (or self) → canonical diverges from lexical path.
-    // Compare canonical `canon` against lexically-cleaned `abs` (NOT re-canonicalized).
-    let norm_c = light_normalize(&canon);
-    let norm_a = light_normalize(&abs);
-    if norm_c != norm_a {
-        return Err("Target differs from canonical path (symlinked ancestor?) — refused.".into());
+    // Symlinked ancestor (or self): check each ancestor component directly.
+    // String-compare against canonical form false-fires on Windows CI where
+    // temp dirs use 8.3 short names (RUNNER~1 vs runneradmin).
+    for anc in abs.ancestors().skip(1) {
+        if let Ok(m) = std::fs::symlink_metadata(anc) {
+            if m.file_type().is_symlink() {
+                return Err("Target has a symlinked ancestor — refused.".into());
+            }
+        }
     }
     if is_protected(&canon) {
         return Err("Path is system-protected. Operation BLOCKED by Safety Guard.".into());

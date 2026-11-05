@@ -116,6 +116,7 @@ fn trash_size_for(mount: &str) -> u64 {
     }
     #[cfg(target_os = "macos")]
     {
+        let _ = mount;
         dirs::home_dir()
             .map(|h| dir_size(&h.join(".Trash")))
             .unwrap_or(0)
