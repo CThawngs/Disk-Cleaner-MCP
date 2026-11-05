@@ -202,6 +202,7 @@ def main():
             "items": [{"approvalToken": token, "path": del_path}],
             "permanent": False,
             "confirmRisk": True,
+            "dryRun": False,
         },
     })
     check_ok(resp, "delete (trash)")
@@ -214,6 +215,7 @@ def main():
         "arguments": {
             "scanId": scan_id,
             "items": [{"approvalToken": "deadbeef", "path": del_path}],
+            "dryRun": False,
         },
     })
     check_ok(resp, "delete (wrong token → rejected)")
