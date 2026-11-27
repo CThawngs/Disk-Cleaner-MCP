@@ -146,12 +146,17 @@ fn build_installed_set(params: &LeftoversParams) -> HashSet<String> {
     let mut set = if params.custom_scan_roots.is_some() && params.installed_hints.is_some() {
         HashSet::new()
     } else {
-        let (mut s, mut sys) = (collect_installed_inventory(), System::new());
-        let rk = ProcessRefreshKind::nothing();
-        sys.refresh_processes_specifics(ProcessesToUpdate::All, true, rk);
-        for p in sys.processes().values() {
-            let n = p.name().to_string_lossy();
-            add_tokens(&mut s, n.strip_suffix(".exe").unwrap_or(&n));
+        let mut s = collect_installed_inventory();
+        if let Ok(mut sys) = System::new() {
+            sys.refresh_processes_specifics(
+                ProcessesToUpdate::All,
+                true,
+                ProcessRefreshKind::nothing(),
+            );
+            for p in sys.processes().values() {
+                let n = p.name().to_string_lossy();
+                add_tokens(&mut s, n.strip_suffix(".exe").unwrap_or(&n));
+            }
         }
         s
     };

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use sysinfo::{Disks, System};
 
 pub fn get_system_status() -> SystemStatus {
-    let disks_info = Disks::new_with_refreshed_list();
+    let disks_info = Disks::new_with_refreshed_list().ok();
 
     let platform = if cfg!(windows) {
         "windows".into()
@@ -26,7 +26,7 @@ pub fn get_system_status() -> SystemStatus {
 
     // Disk info
     let mut disks = Vec::new();
-    for disk in disks_info.list() {
+    for disk in disks_info.iter().flat_map(|d| d.iter()) {
         let mount = disk.mount_point().to_string_lossy().to_string();
         let total = disk.total_space();
         let available = disk.available_space();
