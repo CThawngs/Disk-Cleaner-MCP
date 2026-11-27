@@ -241,7 +241,12 @@ const BROWSER_MARKERS: &[&str] = &[
     "vivaldi",
     "opera software",
     "com.operasoftware",
+    "/.config/opera",
+    "/.cache/opera",
     "arc/user data",
+    "company.thebrowser.browser",
+    "/.config/arc",
+    "/.cache/arc",
     "chromium",
     "mozilla/firefox",
     "firefox/profiles",
@@ -295,7 +300,10 @@ pub fn sensitive_never_touch_reason(path: &Path) -> Option<&'static str> {
 
     if let Some(fname) = path.file_name().map(|f| f.to_string_lossy().to_lowercase()) {
         let fname_clean = strip_ads(&fname);
-        if NEVER_TOUCH_FILES.contains(&fname_clean.as_str()) {
+        if NEVER_TOUCH_FILES.contains(&fname_clean.as_str())
+            || fname_clean == ".env"
+            || fname_clean.starts_with(".env.")
+        {
             return Some("Credential/secret Dotfile is Never-Touch protected");
         }
     }
@@ -533,6 +541,24 @@ mod tests {
         )));
         assert!(is_protected(Path::new(
             "C:/Users/alice/AppData/Roaming/Mozilla/Firefox/Profiles/abc.default/key4.db"
+        )));
+        // All .env and .env.* variants (including .env.development, .env.log, ADS)
+        assert!(is_protected(Path::new("/tmp/work/.env")));
+        assert!(is_protected(Path::new("/tmp/work/.env.development")));
+        assert!(is_protected(Path::new("/tmp/work/.env.log")));
+        assert!(is_protected(Path::new("C:/Temp/.env.staging:stream")));
+        // Arc & Opera on macOS/Linux
+        assert!(is_protected(Path::new(
+            "/Users/alice/Library/Caches/company.thebrowser.Browser/Default/Preferences"
+        )));
+        assert!(is_protected(Path::new(
+            "/home/alice/.config/arc/Default/History"
+        )));
+        assert!(is_protected(Path::new(
+            "/home/alice/.config/opera/Local State"
+        )));
+        assert!(is_protected(Path::new(
+            "/home/alice/.config/opera-gx/Preferences"
         )));
         // Disposable browser caches and AI models remain allowed
         assert!(sensitive_never_touch_reason(Path::new(

@@ -27,8 +27,8 @@ secure preferences|local state|key4.db|logins.json|places.sqlite|cookies.sqlite"
 
 const BROWSER_TABLE: &[&str] = &[
     "Chrome|c|chrome,chrome.exe,google chrome|Google/Chrome/User Data||Google/Chrome|Google/Chrome|google-chrome|google-chrome",
-    "Chrome Beta|c|google chrome beta,chrome-beta|Google/Chrome Beta/User Data||Google/Chrome Beta|Google/Chrome Beta|google-chrome-beta|google-chrome-beta",
-    "Chrome Canary|c|google chrome canary,chrome-canary|Google/Chrome SxS/User Data||Google/Chrome Canary|Google/Chrome Canary|google-chrome-unstable|google-chrome-unstable",
+    "Chrome Beta|c|chrome,chrome.exe,google chrome beta,chrome-beta|Google/Chrome Beta/User Data||Google/Chrome Beta|Google/Chrome Beta|google-chrome-beta|google-chrome-beta",
+    "Chrome Canary|c|chrome,chrome.exe,google chrome canary,chrome-canary|Google/Chrome SxS/User Data||Google/Chrome Canary|Google/Chrome Canary|google-chrome-unstable|google-chrome-unstable",
     "Edge|c|msedge,msedge.exe,microsoft edge,microsoft-edge|Microsoft/Edge/User Data||Microsoft Edge|Microsoft Edge|microsoft-edge|microsoft-edge",
     "Brave|c|brave,brave.exe,brave browser,brave-browser|BraveSoftware/Brave-Browser/User Data||BraveSoftware/Brave-Browser|BraveSoftware/Brave-Browser|BraveSoftware/Brave-Browser|BraveSoftware/Brave-Browser",
     "Arc|c|arc,arc.exe|Arc/User Data||Arc/User Data|company.thebrowser.Browser|arc|arc",
@@ -346,19 +346,27 @@ fn detect_running(rows: &[[&str; 9]], custom_root: Option<&Path>) -> HashSet<Str
         let pname = proc.name().to_string_lossy().to_ascii_lowercase();
         let ex_s = ex.map(|x| x.to_string_lossy().to_ascii_lowercase());
         let exe = ex_s.unwrap_or_default().replace('\\', "/");
-        for r in rows.iter().filter(|r| r[2].split(',').any(|x| x == pname)) {
-            let b = exe.contains("chrome beta") || exe.contains("chrome-beta");
-            let c = exe.contains("chrome sxs") || exe.contains("chrome canary");
-            let ch1 = (r[0] != "Chrome Beta" || b) && (r[0] != "Chrome Canary" || c);
-            let ch_ok = ch1 && (r[0] != "Chrome" || (!b && !c));
-            let op_ok =
-                !pname.starts_with("opera") || (r[0] == "Opera GX") == exe.contains("opera gx");
-            if exe.is_empty() || ((!pname.starts_with("chrome") || ch_ok) && op_ok) {
-                running.insert(r[0].to_ascii_lowercase());
-            }
+        for r in rows.iter().filter(|r| proc_matches_row(r, &pname, &exe)) {
+            running.insert(r[0].to_ascii_lowercase());
         }
     }
     running
+}
+
+fn proc_matches_row(r: &[&str; 9], pname: &str, exe: &str) -> bool {
+    if !r[2].split(',').any(|x| x == pname) {
+        return false;
+    }
+    if exe.is_empty() {
+        return true;
+    }
+    let b = exe.contains("chrome beta") || exe.contains("chrome-beta");
+    let c = exe.contains("chrome sxs") || exe.contains("chrome canary");
+    let ch_ok = (r[0] != "Chrome Beta" || b)
+        && (r[0] != "Chrome Canary" || c)
+        && (r[0] != "Chrome" || (!b && !c));
+    let op_ok = !pname.starts_with("opera") || (r[0] == "Opera GX") == exe.contains("opera gx");
+    (!pname.starts_with("chrome") || ch_ok) && op_ok
 }
 
 fn scan_origins(acc: &mut ScanAcc, ctx: (&str, &str, bool), is_ff: bool, pdir: &Path) -> u64 {
@@ -489,6 +497,16 @@ Profile 1/Service Worker/CacheStorage/h1/index.txt";
         assert!(r_orig.website_storage.len() == 2 && r_orig.website_storage[0].origin.is_some());
         p.custom_browser_root = Some(format!("{}/../etc", tmp.to_string_lossy()));
         assert!(!scan_browsers(&eng, &p).warnings.is_empty());
+        let rows: Vec<[&str; 9]> = BROWSER_TABLE
+            .iter()
+            .filter_map(|l| l.split('|').collect::<Vec<_>>().try_into().ok())
+            .collect();
+        let beta_exe = "c:/program files/google/chrome beta/application/chrome.exe";
+        assert!(proc_matches_row(&rows[1], "chrome.exe", beta_exe));
+        assert!(!proc_matches_row(&rows[0], "chrome.exe", beta_exe));
+        let canary_exe = "c:/users/u/appdata/local/google/chrome sxs/application/chrome.exe";
+        assert!(proc_matches_row(&rows[2], "chrome.exe", canary_exe));
+        assert!(!proc_matches_row(&rows[0], "chrome.exe", canary_exe));
         let _ = fs::remove_dir_all(&tmp);
     }
 }

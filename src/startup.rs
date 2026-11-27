@@ -363,8 +363,16 @@ fn extract_script_arg(rest: &str) -> Option<String> {
 }
 
 fn redact_command_secrets(cmd: &str) -> String {
-    let flags = SECRET_FLAGS_CSV;
-    let is_fl = |f: &str| flags.split('|').any(|x| x.eq_ignore_ascii_case(f));
+    let is_fl = |f: &str| {
+        let fc = f.trim_start_matches('-');
+        SECRET_FLAGS_CSV
+            .split('|')
+            .any(|x| x.eq_ignore_ascii_case(f))
+            || (!fc.is_empty()
+                && ["_token", "_key", "_secret", "_password", "_passwd"]
+                    .iter()
+                    .any(|s| fc.to_ascii_lowercase().ends_with(s)))
+    };
     let (mut out, mut redact_next) = (Vec::new(), false);
     for tok in tokenize_quotes(cmd) {
         if std::mem::take(&mut redact_next) {
@@ -378,10 +386,111 @@ fn redact_command_secrets(cmd: &str) -> String {
         } else if let Some((fp, _)) = unq.split_once('=').filter(|(f, _)| is_fl(f)) {
             out.push(format!("{fp}=[REDACTED]"));
         } else {
-            out.push(tok);
+            out.push(redact_inline_secrets(&tok));
         }
     }
-    out.join(" ")
+    redact_inline_secrets(&out.join(" "))
+}
+
+fn redact_inline_secrets(input: &str) -> String {
+    // 1. Redact <scheme>://<userinfo>@<host> -> <scheme>://[REDACTED]@<host>
+    let mut s = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(pos) = rest.find("://") {
+        let has_scheme = pos > 0 && rest.as_bytes()[pos - 1].is_ascii_alphanumeric();
+        let auth_start = pos + 3;
+        let tail = &rest[auth_start..];
+        let auth_end = tail
+            .find(|c: char| c.is_whitespace() || matches!(c, '/' | '?' | '#' | '"' | '\''))
+            .unwrap_or(tail.len());
+        if has_scheme {
+            if let Some(at) = tail[..auth_end].rfind('@').filter(|&i| i > 0) {
+                s.push_str(&rest[..auth_start]);
+                s.push_str("[REDACTED]@");
+                rest = &tail[at + 1..];
+                continue;
+            }
+        }
+        s.push_str(&rest[..auth_start + auth_end]);
+        rest = &tail[auth_end..];
+    }
+    s.push_str(rest);
+
+    // 2. Redact inline "Bearer <secret>" / "Basic <secret>" (including inside quotes/headers)
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let (mut i, mut last) = (0usize, 0usize);
+    while i < bytes.len() {
+        let matched = ["bearer", "basic"].into_iter().find(|kw| {
+            i + kw.len() < bytes.len()
+                && s.is_char_boundary(i)
+                && s.is_char_boundary(i + kw.len())
+                && s[i..i + kw.len()].eq_ignore_ascii_case(kw)
+                && (i == 0
+                    || bytes[i - 1].is_ascii_whitespace()
+                    || matches!(bytes[i - 1], b'"' | b'\'' | b':' | b'='))
+                && matches!(bytes[i + kw.len()], b' ' | b'\t')
+        });
+        if let Some(kw) = matched {
+            let mut ts = i + kw.len();
+            while ts < bytes.len() && matches!(bytes[ts], b' ' | b'\t') {
+                ts += 1;
+            }
+            let mut te = ts;
+            while te < bytes.len()
+                && !bytes[te].is_ascii_whitespace()
+                && !matches!(bytes[te], b'"' | b'\'' | b';' | b',')
+            {
+                te += 1;
+            }
+            if te > ts && s.is_char_boundary(ts) && s.is_char_boundary(te) {
+                out.push_str(&s[last..ts]);
+                out.push_str("[REDACTED]");
+                i = te;
+                last = te;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out.push_str(&s[last..]);
+
+    // 3. Redact URL query secrets (?token=..., &api_key=..., &password=..., &secret=...)
+    let mut final_out = String::with_capacity(out.len());
+    let mut qrest = out.as_str();
+    while let Some(idx) = qrest.find(['?', '&']) {
+        final_out.push_str(&qrest[..=idx]);
+        let after = &qrest[idx + 1..];
+        let seg_end = after
+            .find(|c: char| c.is_whitespace() || matches!(c, '&' | '#' | '"' | '\''))
+            .unwrap_or(after.len());
+        let seg = &after[..seg_end];
+        if let Some((k, _)) = seg.split_once('=') {
+            let kl = k.to_ascii_lowercase();
+            if matches!(
+                kl.as_str(),
+                "token"
+                    | "access_token"
+                    | "auth_token"
+                    | "api_key"
+                    | "apikey"
+                    | "key"
+                    | "password"
+                    | "passwd"
+                    | "secret"
+                    | "client_secret"
+            ) {
+                final_out.push_str(k);
+                final_out.push_str("=[REDACTED]");
+                qrest = &after[seg_end..];
+                continue;
+            }
+        }
+        final_out.push_str(seg);
+        qrest = &after[seg_end..];
+    }
+    final_out.push_str(qrest);
+    final_out
 }
 
 fn tokenize_quotes(s: &str) -> Vec<String> {
@@ -464,10 +573,16 @@ mod tests {
             let want = (!exp.is_empty()).then_some(exp);
             assert_eq!(got.as_deref(), want);
         }
-        let raw = r#""C:\App\a.exe" --api-key=sk-123 --password pw9 -token t9 Bearer jwt99 --ok"#;
+        let raw = r#""C:\App\a.exe" --api-key=sk-123 --password pw9 -token t9 Bearer jwt99 -H "Authorization: Bearer qjwt88" https://admin:urlpw77@host.local/cb?token=qtok66&ok=1 --ok"#;
         let red = redact_command_secrets(raw);
-        let bad = ["sk-123", "pw9", "t9", "jwt99"];
-        assert!(bad.iter().all(|s| !red.contains(s)) && red.contains("--ok"));
+        let bad = [
+            "sk-123", "pw9", "t9", "jwt99", "qjwt88", "urlpw77", "admin:", "qtok66",
+        ];
+        assert!(bad.iter().all(|s| !red.contains(s)), "leaked in: {red}");
+        assert!(
+            red.contains("https://[REDACTED]@host.local/cb?token=[REDACTED]&ok=1")
+                && red.contains("--ok")
+        );
         let tmp = std::env::temp_dir().join(format!("dcm-startup-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();

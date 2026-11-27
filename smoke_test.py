@@ -292,6 +292,12 @@ def main():
     os.makedirs(ssh_trap, exist_ok=True)
     with open(os.path.join(ssh_trap, "id_ed25519"), "w") as f:
         f.write("PRIVATE-KEY-NEVER-TOUCH")
+    for env_name in (".env", ".env.development", ".env.log"):
+        env_p = os.path.join(ss_root, env_name)
+        with open(env_p, "w") as f:
+            f.write("SECRET_KEY=never_delete_" + env_name * 8000)
+        old_env_ts = time.time() - (10 * 86400)
+        os.utime(env_p, (old_env_ts, old_env_ts))
     npm_cache = os.path.join(ss_root, "npm-cache")
     os.makedirs(npm_cache, exist_ok=True)
     with open(os.path.join(npm_cache, "pkg.tgz"), "wb") as f:
@@ -302,8 +308,22 @@ def main():
         "targetFreeBytes": 65536,
         "detailLevel": "brief",
     }, "smart_scan (sandbox + reclaim planner)")
-    ss_paths = [u["path"].lower() for u in ss.get("units", [])]
-    assert not any(".ssh" in p or "id_ed25519" in p for p in ss_paths), f"Never-Touch .ssh leaked: {ss_paths}"
+    ss_full = call_tool(srv, "smart_scan", {
+        "customRootsOverride": [ss_root],
+        "detailLevel": "full",
+    }, "smart_scan (.env.* + .ssh Never-Touch full check)")
+    ss_paths = [u["path"].lower() for u in ss_full.get("units", [])]
+    assert not any(".ssh" in p or "id_ed25519" in p or ".env" in p for p in ss_paths), f"Never-Touch .ssh/.env.* leaked: {ss_paths}"
+    env_log_p = os.path.join(ss_root, ".env.log")
+    env_del = call_tool(srv, "delete", {
+        "scanId": ss_full["scanId"],
+        "items": [{"path": env_log_p, "approvalToken": "00" * 32}],
+        "permanent": True,
+        "confirmPermanent": True,
+        "confirmRisk": False,
+        "dryRun": False,
+    }, "delete (.env.log -> rejected/not_found, file preserved)")
+    assert os.path.exists(env_log_p), f".env.log must never be deleted: {env_del}"
     assert ss.get("planTotalBytes", 0) >= 65536 and ss.get("targetMet") is True, f"planner failed: {ss}"
     plan_u = ss["recommendedPlan"][0]
     ss_del = call_tool(srv, "delete", {
@@ -397,14 +417,18 @@ def main():
     missing_bin = os.path.join(v06_tmp, "nonexistent_daemon.exe" if platform.system() == "Windows" else "nonexistent_daemon")
     desktop_entry = os.path.join(st_dir, "ghost-agent.desktop")
     with open(desktop_entry, "w", encoding="utf-8") as f:
-        f.write(f"[Desktop Entry]\nType=Application\nName=GhostAgent\nExec=\"{missing_bin}\" --api-key sk-live-SUPERSECRET999\n")
+        f.write(
+            f'[Desktop Entry]\nType=Application\nName=GhostAgent\n'
+            f'Exec="{missing_bin}" --api-key sk-live-SUPERSECRET999 -H "Authorization: Bearer BEARERSECRET888" https://admin:URLPASS777@api.example.com/hook\n'
+        )
     st = call_tool(srv, "scan_startup_items", {
         "customDir": st_dir,
         "orphansOnly": True,
     }, "scan_startup_items (orphan + secret redaction)")
     assert st.get("orphanedCount", 0) == 1, f"expected 1 orphaned startup item: {st}"
     st_raw = json.dumps(st)
-    assert "SUPERSECRET999" not in st_raw, f"CLI secret leaked in startup report: {st_raw}"
+    for secret_marker in ("SUPERSECRET999", "BEARERSECRET888", "URLPASS777", "admin:"):
+        assert secret_marker not in st_raw, f"CLI secret {secret_marker} leaked in startup report: {st_raw}"
     assert st["items"][0].get("approvalToken"), f"writable startup orphan must have approvalToken: {st}"
 
     # (F) find_large_forgotten (semantic ml_model kind + review token)
