@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<BatteryReport xmlns="http://schemas.microsoft.com/battery/2012">
+  <ReportInformation>
+    <ReportGuid>00000000-0000-0000-0000-000000000000</ReportGuid>
+    <ReportVersion>1.0</ReportVersion>
+    <ScanTime>2026-11-28T00:00:00Z</ScanTime>
+  </ReportInformation>
+  <SystemInformation>
+    <ComputerName>SYNTHETIC-HOST</ComputerName>
+    <SystemManufacturer>GenericVendor</SystemManufacturer>
+    <SystemProductName>SyntheticBook 14</SystemProductName>
+  </SystemInformation>
+  <Batteries>
+    <Battery>
+      <Id>SYNTH-BAT-01</Id>
+      <Manufacturer>GenericCells</Manufacturer>
+      <SerialNumber>REDACTED-WIN-BAT-SERIAL-9999</SerialNumber>
+      <ManufactureDate></ManufactureDate>
+      <Chemistry>LiP</Chemistry>
+      <LongTerm>1</LongTerm>
+      <RelativeCapacity>0</RelativeCapacity>
+      <DesignCapacity>60000</DesignCapacity>
+      <FullChargeCapacity>51600</FullChargeCapacity>
+      <CycleCount>215</CycleCount>
+    </Battery>
+  </Batteries>
+</BatteryReport>

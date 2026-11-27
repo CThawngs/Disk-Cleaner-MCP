@@ -1,0 +1,38 @@
+{
+  "json_format_version": [1, 0],
+  "device": {
+    "name": "/dev/nvme0n1",
+    "type": "nvme",
+    "protocol": "NVMe"
+  },
+  "model_name": "Synthetic Linux NVMe 1TB",
+  "serial_number": "REDACTED-SMARTCTL-SN-5555",
+  "wwn": {
+    "naa": 5,
+    "oui": 9999,
+    "id": 12345678
+  },
+  "user_capacity": {
+    "blocks": 1953525168,
+    "bytes": 1000204886016
+  },
+  "smart_status": {
+    "passed": true
+  },
+  "temperature": {
+    "current": 41
+  },
+  "power_on_time": {
+    "hours": 4820
+  },
+  "nvme_smart_health_information_log": {
+    "critical_warning": 0,
+    "temperature": 41,
+    "available_spare": 100,
+    "available_spare_threshold": 10,
+    "percentage_used": 6,
+    "power_on_hours": 4820,
+    "media_errors": 0,
+    "num_err_log_entries": 0
+  }
+}

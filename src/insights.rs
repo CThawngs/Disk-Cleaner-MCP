@@ -4,13 +4,13 @@
 //! content-hash pass in `find_duplicates`:
 //!   * `build_tree`        — recursive folder sizes (TreeSize "folder view")
 //!   * `file_types`        — per-extension size/count breakdown
-//!   * `find_duplicates`   — size prefilter + streaming SHA-256 dedup
+//!   * `find_duplicates`   — size prefilter + head/tail + streaming BLAKE3 dedup
 //!   * `compare_snapshots` — diff two scans (TreeSize "compare over time")
 
 use crate::model::*;
 use crate::safety;
+use blake3::Hasher;
 use rayon::prelude::*;
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -18,11 +18,47 @@ use std::path::Path;
 /// Read size of the largest file we fully content-hash. Larger files use a
 /// sampled hash (head 64KB + tail 64KB + length) and are flagged partial.
 const MAX_HASH_BYTES: u64 = 4 * 1024 * 1024 * 1024;
-/// Head stage reads only this many bytes + length, so large same-size
-/// non-duplicates cost 64KB I/O instead of full file reads.
+/// Head/tail stage reads at most 64KB per window so large same-size
+/// non-duplicates avoid full file reads.
 const HEAD_HASH_BYTES: usize = 64 * 1024;
 /// Extension shown for files with no extension.
 const NO_EXT: &str = "(none)";
+
+/// Windows file attribute mask for Cloud-Only / unpinned files (OneDrive, iCloud, Cloud Files API):
+/// FILE_ATTRIBUTE_OFFLINE (0x1000) | FILE_ATTRIBUTE_RECALL_ON_OPEN (0x40000) | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS (0x400000).
+const WINDOWS_CLOUD_PLACEHOLDER_MASK: u32 = 0x0000_1000 | 0x0004_0000 | 0x0040_0000;
+
+#[inline]
+pub(crate) fn is_cloud_attributes_windows(file_attributes: u32) -> bool {
+    (file_attributes & WINDOWS_CLOUD_PLACEHOLDER_MASK) != 0
+}
+
+#[inline]
+pub(crate) fn is_cloud_blocks_unix(blocks: u64, len: u64) -> bool {
+    blocks == 0 && len > 0
+}
+
+/// Cross-platform check for Cloud-Only / unpinned placeholder files so scanners
+/// and content hashers NEVER trigger involuntary cloud hydration downloads.
+pub fn is_cloud_placeholder(meta: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        let _ = is_cloud_blocks_unix;
+        is_cloud_attributes_windows(meta.file_attributes())
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let _ = is_cloud_attributes_windows;
+        is_cloud_blocks_unix(meta.blocks(), meta.len())
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = (meta, is_cloud_attributes_windows, is_cloud_blocks_unix);
+        false
+    }
+}
 
 // ── path helpers (paths are stored with forward slashes) ──
 
@@ -213,17 +249,26 @@ pub fn file_types(entries: &[ScanEntry], scan_id: &str, limit: usize) -> FileTyp
     }
 }
 
-// ── 3. duplicates ──
+// ── 3. duplicates (SIMD BLAKE3 + Cloud-Only & Hardlink Guards) ──
 
-/// Streaming SHA-256 of a file's content, or None if unreadable/too large.
-fn hash_file(path: &str) -> Option<String> {
+/// Inspect metadata without following symlinks; reject symlinks, non-files, and cloud placeholders.
+fn inspect_hashable_meta(path: &Path) -> Result<Option<std::fs::Metadata>, ()> {
+    let meta = std::fs::symlink_metadata(path).map_err(|_| ())?;
+    if meta.file_type().is_symlink() || !meta.is_file() || is_cloud_placeholder(&meta) {
+        return Ok(None);
+    }
+    Ok(Some(meta))
+}
+
+/// Streaming full BLAKE3 of a file's content, or None if unreadable/too large/cloud placeholder.
+fn full_hash(path: &str) -> Option<String> {
     let p = Path::new(path);
-    let meta = std::fs::metadata(p).ok()?;
-    if !meta.is_file() || meta.len() > MAX_HASH_BYTES {
+    let meta = inspect_hashable_meta(p).ok()??;
+    if meta.len() > MAX_HASH_BYTES {
         return None;
     }
     let mut f = std::fs::File::open(p).ok()?;
-    let mut hasher = Sha256::new();
+    let mut hasher = Hasher::new();
     let mut buf = vec![0u8; 64 * 1024];
     loop {
         let n = match f.read(&mut buf) {
@@ -233,37 +278,39 @@ fn hash_file(path: &str) -> Option<String> {
         };
         hasher.update(&buf[..n]);
     }
-    Some(safety::hex::encode(hasher.finalize()))
+    Some(hasher.finalize().to_hex().to_string())
 }
 
-/// Hash only first HEAD_HASH_BYTES + file length (cheap prefilter).
-/// No size cap: reads at most 64KB regardless of file size.
-fn hash_file_head(path: &str, size: u64) -> Option<String> {
+/// Cheap prefilter: BLAKE3 of head 64KB (+ tail 64KB when size > 64KB) + file length.
+fn head_tail_hash(path: &str, size: u64) -> Option<String> {
     let p = Path::new(path);
-    let meta = std::fs::metadata(p).ok()?;
-    if !meta.is_file() {
-        return None;
-    }
+    let _meta = inspect_hashable_meta(p).ok()??;
     let mut f = std::fs::File::open(p).ok()?;
-    let mut hasher = Sha256::new();
+    let mut hasher = Hasher::new();
     let mut buf = vec![0u8; HEAD_HASH_BYTES];
     let n = f.read(&mut buf).ok()?;
     hasher.update(&buf[..std::cmp::min(n, size as usize)]);
-    hasher.update(size.to_le_bytes());
-    Some(safety::hex::encode(hasher.finalize()))
+    if size > HEAD_HASH_BYTES as u64 {
+        let tail_start = size.saturating_sub(HEAD_HASH_BYTES as u64);
+        if f.seek(SeekFrom::Start(tail_start)).is_err() {
+            return None;
+        }
+        let m = f.read(&mut buf).ok()?;
+        hasher.update(&buf[..std::cmp::min(m, HEAD_HASH_BYTES)]);
+    }
+    hasher.update(&size.to_le_bytes());
+    hasher.update(b"head_tail");
+    Some(hasher.finalize().to_hex().to_string())
 }
 
-/// Sampled hash for >4GB files: head 64KB + tail 64KB + length + marker.
+/// Sampled BLAKE3 hash for >4GB files: head 64KB + tail 64KB + length + marker.
 /// Same-size files differing outside those windows may collide — callers
 /// flag such groups `partial` so the agent verifies before deleting.
-fn hash_file_sampled(path: &str, size: u64) -> Option<String> {
+fn sampled_hash(path: &str, size: u64) -> Option<String> {
     let p = Path::new(path);
-    let meta = std::fs::metadata(p).ok()?;
-    if !meta.is_file() {
-        return None;
-    }
+    let _meta = inspect_hashable_meta(p).ok()??;
     let mut f = std::fs::File::open(p).ok()?;
-    let mut hasher = Sha256::new();
+    let mut hasher = Hasher::new();
     let mut head = vec![0u8; HEAD_HASH_BYTES];
     let n = f.read(&mut head).ok()?;
     hasher.update(&head[..std::cmp::min(n, HEAD_HASH_BYTES)]);
@@ -274,46 +321,89 @@ fn hash_file_sampled(path: &str, size: u64) -> Option<String> {
     let mut tail = vec![0u8; HEAD_HASH_BYTES];
     let m = f.read(&mut tail).ok()?;
     hasher.update(&tail[..std::cmp::min(m, HEAD_HASH_BYTES)]);
-    hasher.update(size.to_le_bytes());
+    hasher.update(&size.to_le_bytes());
     hasher.update(b"partial");
-    Some(safety::hex::encode(hasher.finalize()))
+    Some(hasher.finalize().to_hex().to_string())
 }
 
 /// Find byte-identical duplicate files within a scan.
 ///
-/// Cheap prefilter by size (no disk reads), then parallel streaming SHA-256
-/// only over same-size groups. Each returned file carries its scan `approval`
-/// token so the caller can delete redundant copies via the normal safe flow.
+/// Cheap prefilter by size (no disk reads), skips Never-Touch / system-protected
+/// paths, Cloud-Only placeholders, and Unix hardlinks `(dev, ino)`, then runs
+/// parallel head+tail + streaming SIMD BLAKE3 over colliding groups.
 pub fn find_duplicates(
     entries: &[ScanEntry],
     scan_id: &str,
     min_size: u64,
     top: usize,
 ) -> DuplicateReport {
-    // candidate = files, size >= min_size, not system-protected
     let candidates: Vec<&ScanEntry> = entries
         .iter()
         .filter(|e| {
-            e.kind == "file" && e.size >= min_size && !safety::is_protected(Path::new(&e.path))
+            if e.kind != "file" || e.size < min_size {
+                return false;
+            }
+            let p = Path::new(&e.path);
+            safety::sensitive_never_touch_reason(p).is_none() && !safety::is_protected(p)
         })
         .collect();
 
-    // group by size; only sizes with >=2 files are possible duplicates
     let mut by_size: HashMap<u64, Vec<&ScanEntry>> = HashMap::new();
     for e in &candidates {
         by_size.entry(e.size).or_default().push(e);
     }
-    let groups_by_size: Vec<Vec<&ScanEntry>> =
-        by_size.into_values().filter(|g| g.len() >= 2).collect();
+
+    #[cfg(unix)]
+    let mut seen_inodes: HashSet<(u64, u64)> = HashSet::new();
+    let mut meta_failed = 0u64;
+    let mut groups_by_size: Vec<Vec<&ScanEntry>> = Vec::new();
+
+    for mut group in by_size.into_values() {
+        if group.len() < 2 {
+            continue;
+        }
+        // Deterministic oldest-first order before hardlink deduplication.
+        group.sort_by(|a, b| {
+            a.modified
+                .unwrap_or(i64::MAX)
+                .cmp(&b.modified.unwrap_or(i64::MAX))
+                .then_with(|| a.path.cmp(&b.path))
+        });
+
+        let mut eligible = Vec::with_capacity(group.len());
+        for e in group {
+            match inspect_hashable_meta(Path::new(&e.path)) {
+                Err(()) => {
+                    meta_failed += 1;
+                }
+                Ok(None) => {
+                    // Symlink or Cloud-Only placeholder: intentionally skipped without I/O.
+                }
+                Ok(Some(meta)) => {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::MetadataExt;
+                        if !seen_inodes.insert((meta.dev(), meta.ino())) {
+                            continue;
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    let _ = &meta;
+                    eligible.push(e);
+                }
+            }
+        }
+        if eligible.len() >= 2 {
+            groups_by_size.push(eligible);
+        }
+    }
+
     let candidate_files: u64 = groups_by_size.iter().map(|g| g.len() as u64).sum();
 
-    // Stage 1 (cheap): head hash (first 64KB + length) — full-hash only
-    // head collisions. Files <= HEAD bytes: head read == whole file, but
-    // length salt keeps it distinct from full hash; full-hash them anyway
-    // when colliding (small files, cheap).
+    // Stage 1 (cheap): head+tail BLAKE3 prefilter — full-hash only collisions.
     let heads: Vec<(&ScanEntry, Option<String>)> = groups_by_size
         .par_iter()
-        .flat_map(|g| g.par_iter().map(|e| (*e, hash_file_head(&e.path, e.size))))
+        .flat_map(|g| g.par_iter().map(|e| (*e, head_tail_hash(&e.path, e.size))))
         .collect();
     let mut by_head: HashMap<(u64, String), Vec<&ScanEntry>> = HashMap::new();
     let mut head_failed = 0u64;
@@ -324,16 +414,17 @@ pub fn find_duplicates(
             head_failed += 1;
         }
     }
-    // Stage 2 (exact for <=4GB, sampled for >4GB): hash only head collisions.
+
+    // Stage 2 (exact for <=4GB, sampled for >4GB): hash only Stage 1 collisions.
     let colliding: Vec<Vec<&ScanEntry>> = by_head.into_values().filter(|g| g.len() >= 2).collect();
     let hashed: Vec<(&ScanEntry, Option<String>)> = colliding
         .par_iter()
         .flat_map(|g| {
             g.par_iter().map(|e| {
                 let h = if e.size > MAX_HASH_BYTES {
-                    hash_file_sampled(&e.path, e.size)
+                    sampled_hash(&e.path, e.size)
                 } else {
-                    hash_file(&e.path)
+                    full_hash(&e.path)
                 };
                 (*e, h)
             })
@@ -341,9 +432,9 @@ pub fn find_duplicates(
         .collect();
     let hashed_files = hashed.iter().filter(|(_, h)| h.is_some()).count() as u64;
     let full_failed = hashed.len() as u64 - hashed_files;
-    let unreadable_files = head_failed + full_failed;
+    let unreadable_files = meta_failed + head_failed + full_failed;
 
-    // final grouping by (size, hash)
+    // Final grouping by (size, hash)
     let mut by_hash: HashMap<(u64, String), Vec<&ScanEntry>> = HashMap::new();
     for (e, h) in hashed {
         if let Some(h) = h {
@@ -357,7 +448,7 @@ pub fn find_duplicates(
         if files.len() < 2 {
             continue;
         }
-        // oldest first → caller keeps files[0]
+        // Oldest first → caller keeps files[0]
         files.sort_by_key(|e| e.modified.unwrap_or(i64::MAX));
         let wasted = size * (files.len() as u64 - 1);
         total_wasted += wasted;
@@ -565,7 +656,6 @@ mod tests {
         assert_eq!(tree.files, 2);
         assert_eq!(tree.direct_size, 1000);
         assert_eq!(tree.direct_files, 1);
-        // sub dir child present with its own recursive size
         let sub = tree
             .children
             .iter()
@@ -586,7 +676,6 @@ mod tests {
                 None,
             ));
             entries.push(dir(&format!("C:/root/d{}", i), 1));
-            // force each dir to hold a file so it gets recursive size
             entries.push(file(
                 &format!("C:/root/d{}/x.bin", i),
                 (i + 1) * 100,
@@ -596,11 +685,9 @@ mod tests {
         }
         let tree = build_tree(&entries, "C:/root", 5);
         assert!(tree.children_truncated, "children should be truncated");
-        // 5 real children + 1 rollup
         assert_eq!(tree.children.len(), 6);
         let rollup = tree.children.last().unwrap();
         assert!(rollup.name.starts_with("(+"));
-        // recursive totals must still be exact regardless of truncation
         let total: u64 = (1..=30).map(|i| (i * 10) + (i * 100)).sum();
         assert_eq!(tree.size, total);
     }
@@ -623,18 +710,19 @@ mod tests {
     }
 
     #[test]
-    fn test_find_duplicates_groups_identical_content() {
+    fn test_find_duplicates_groups_identical_content_with_blake3() {
         let dir = std::env::temp_dir().join(format!("dc-mcp-dup-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("one.bin"), b"same-bytes-123456789").unwrap();
-        std::fs::write(dir.join("two.bin"), b"same-bytes-123456789").unwrap();
+        let payload = b"same-bytes-123456789!";
+        std::fs::write(dir.join("one.bin"), payload).unwrap();
+        std::fs::write(dir.join("two.bin"), payload).unwrap();
         std::fs::write(dir.join("unique.bin"), b"different-content-xy!").unwrap();
 
         let p = |n: &str, m: i64| {
             let mut e = file(
                 &dir.join(n).to_string_lossy().replace('\\', "/"),
-                21,
+                payload.len() as u64,
                 "bin",
                 Some(m),
             );
@@ -648,17 +736,15 @@ mod tests {
         let g = &rep.top_groups[0];
         assert_eq!(g.file_count, 2);
         assert_eq!(g.wasted_size, 21, "one copy reclaimable");
-        assert_eq!(g.files[0].path, rep.top_groups[0].files[0].path);
-        // oldest first → keep one.bin (modified 100) at index 0
+        assert_eq!(g.hash, blake3::hash(payload).to_hex().as_str());
         assert!(g.files[0].path.ends_with("one.bin"));
-        // tokens preserved so caller can delete safely
         assert!(g.files.iter().all(|f| f.approval_token.starts_with("tok-")));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn test_sampled_hash_deterministic_and_size_salted() {
+    fn test_sampled_and_head_tail_hashes_distinct_from_full() {
         let dir = std::env::temp_dir().join(format!("dc-mcp-samp-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -667,13 +753,88 @@ mod tests {
         std::fs::write(dir.join("b.bin"), &data).unwrap();
         let pa = dir.join("a.bin").to_string_lossy().to_string();
         let pb = dir.join("b.bin").to_string_lossy().to_string();
-        let ha = hash_file_sampled(&pa, 200_000).unwrap();
-        let hb = hash_file_sampled(&pb, 200_000).unwrap();
+        let ha = sampled_hash(&pa, 200_000).unwrap();
+        let hb = sampled_hash(&pb, 200_000).unwrap();
+        let ht = head_tail_hash(&pa, 200_000).unwrap();
+        let hf = full_hash(&pa).unwrap();
         assert_eq!(ha, hb, "identical content → identical sampled hash");
-        assert_ne!(
-            ha,
-            hash_file(&pa).unwrap(),
-            "sampled hash must differ from full hash"
+        assert_ne!(ha, hf, "sampled hash must differ from full hash");
+        assert_ne!(ht, hf, "head+tail hash must differ from full hash");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_cloud_placeholder_detection_formulas() {
+        assert!(is_cloud_attributes_windows(0x0000_1000)); // FILE_ATTRIBUTE_OFFLINE
+        assert!(is_cloud_attributes_windows(0x0004_0000)); // RECALL_ON_OPEN
+        assert!(is_cloud_attributes_windows(0x0040_0020)); // RECALL_ON_DATA_ACCESS | ARCHIVE
+        assert!(!is_cloud_attributes_windows(0x0000_0020)); // Normal ARCHIVE file
+
+        assert!(is_cloud_blocks_unix(0, 4096)); // Unpinned cloud placeholder
+        assert!(!is_cloud_blocks_unix(0, 0)); // Legitimate 0-byte empty file
+        assert!(!is_cloud_blocks_unix(8, 4096)); // Allocated local file
+    }
+
+    #[test]
+    fn test_find_duplicates_skips_sensitive_never_touch() {
+        let dir = std::env::temp_dir().join(format!("dc-mcp-nt-dup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let ssh_dir = dir.join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).unwrap();
+        std::fs::write(ssh_dir.join("id_ed25519"), b"secret-key-material!").unwrap();
+        std::fs::write(dir.join("copy.txt"), b"secret-key-material!").unwrap();
+        std::fs::write(dir.join(".env"), b"secret-key-material!").unwrap();
+
+        let entries = vec![
+            file(
+                &ssh_dir
+                    .join("id_ed25519")
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+                20,
+                "",
+                Some(10),
+            ),
+            file(
+                &dir.join(".env").to_string_lossy().replace('\\', "/"),
+                20,
+                "env",
+                Some(20),
+            ),
+            file(
+                &dir.join("copy.txt").to_string_lossy().replace('\\', "/"),
+                20,
+                "txt",
+                Some(30),
+            ),
+        ];
+        let rep = find_duplicates(&entries, "scan-nt", 1, 10);
+        assert_eq!(
+            rep.groups_found, 0,
+            "sensitive files must never be hashed or grouped"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_find_duplicates_deduplicates_unix_hardlinks() {
+        let dir = std::env::temp_dir().join(format!("dc-mcp-hl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let orig = dir.join("orig.bin");
+        let link = dir.join("hardlink.bin");
+        std::fs::write(&orig, b"hardlink-test-bytes!").unwrap();
+        std::fs::hard_link(&orig, &link).unwrap();
+
+        let entries = vec![
+            file(&orig.to_string_lossy(), 20, "bin", Some(10)),
+            file(&link.to_string_lossy(), 20, "bin", Some(10)),
+        ];
+        let rep = find_duplicates(&entries, "scan-hl", 1, 10);
+        assert_eq!(
+            rep.groups_found, 0,
+            "hardlinks share one inode and waste 0 bytes"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -705,7 +866,6 @@ mod tests {
                 &files,
             )
         };
-        // scan A: keep.bin(10), gone.bin(30), same.bin(50)
         let a = snap(
             "A",
             vec![
@@ -714,7 +874,6 @@ mod tests {
                 file("C:/root/same.bin", 50, "bin", None),
             ],
         );
-        // scan B: keep.bin grew to 40, gone.bin removed, new.bin(70) added, same.bin unchanged
         let b = snap(
             "B",
             vec![
