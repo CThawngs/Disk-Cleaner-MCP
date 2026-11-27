@@ -20,6 +20,7 @@
 - **Giai đoạn:** v0.3.0 — Chưa tag (đang dev trên `main`): brain per-file judgment + safe-delete gates (`confirm_risk`, `dry_run`, audit JSONL) + 12 tools (thêm `empty_trash`) + partial-hash >4GB + snapshot prune 50 + audit ISO. Đã release v0.2.1 (tag `v0.2.1`, commit `23f0acd`): P0–P4 hardening + multiplatform.
 - **Stack:** Rust (rmcp 3.1, tokio, jwalk 0.9, rayon, sysinfo, trash 5, sha2).
 - **Nhịp công việc:** 10-bước Autonomous Agent (xem thủ công trong phiên Hermes).
+- **Trạng thái phiên 2026-11-28 (v0.6.0):** ✅ Nâng cấp 100% pure-MCP (14 → 20 tools: `smart_scan` + `ai_stack`, `scan_browsers` + `leveldb_ro`, `scan_app_leftovers`, `scan_startup_items`, `get_hardware_health`, `find_large_forgotten`, `blake3` dedup + Cloud-Only guard, `rmcp 3.12`, Never-Touch Guard). Chi tiết: `.agent/SPEC_V06_MACSWEEP.md`.
 - **Trạng thái phiên 2026-09-11:** ✅ merge vào `main` (`fd5f334`, CI 3 OS success) + tag `v0.2.0` (Release workflow publish binaries) + docs đồng bộ + đóng GAP-1/2.
 - **Trạng thái phiên 2026-09-10:** ✅ insights port (ADR-010..012) — `cargo fmt` ✓, `cargo clippy -D warnings` ✓, `cargo test` 29/29 ✓, `cargo build --release` ✓, smoke test E2E 4 tool mới ✓.
 - **Trạng thái phiên 2026-08-09:** ✅ `cargo fmt` ✓, `cargo clippy -D warnings` ✓, `cargo test` 19/19 ✓, `cargo build --release` ✓, smoke test E2E ✓, commit `23ee603` ✓.

@@ -287,23 +287,7 @@ impl ScanEngine {
     }
 
     fn push_session(&self, session: ScanSession) -> Arc<ScanSession> {
-        Self::save_session(&session);
-        let arc = Arc::new(session);
-        {
-            let mut sessions = self.sessions.write().unwrap_or_else(|e| e.into_inner());
-            let mut order = self.order.write().unwrap_or_else(|e| e.into_inner());
-            if !sessions.contains_key(&arc.scan_id) {
-                order.push_back(arc.scan_id.clone());
-            }
-            sessions.insert(arc.scan_id.clone(), arc.clone());
-            // ponytail: keep max 3 sessions; evict oldest (FIFO)
-            while order.len() > 3 {
-                if let Some(old) = order.pop_front() {
-                    sessions.remove(&old);
-                }
-            }
-        }
-        arc
+        self.push_session_opts(session, true)
     }
 
     /// Run a scan at `root`. `max_entries`/`max_depth` override the built-in
@@ -677,8 +661,21 @@ impl ScanEngine {
                 .find(|e| e.path == item.path)
                 .cloned();
 
-            // Brain gate: blocked always; keep/review need confirm_risk.
+            // Brain gate: blocked always; browser_site_data is Trash-only; keep/review need confirm_risk.
             if let Some(e) = &entry {
+                if req.permanent && e.category == "browser_site_data" {
+                    outcomes.push(DeleteOutcome {
+                        path: item.path.clone(),
+                        status: "rejected".into(),
+                        message: Some(
+                            "Website storage (browser_site_data) is Trash-only (permanent=false) so per-site data remains recoverable."
+                                .into(),
+                        ),
+                    });
+                    rejected += 1;
+                    audit(&req.scan_id, &item.path, "rejected-site-data-permanent");
+                    continue;
+                }
                 match e.verdict.as_str() {
                     "blocked" => {
                         outcomes.push(DeleteOutcome {

@@ -3,14 +3,22 @@
 //! Serves MCP protocol over stdio. Run as a binary, connect from any MCP client
 //! (Hermes, Claude, Cursor, OpenClaw, etc.).
 
+mod ai_stack;
 mod analytics;
 mod brain;
+mod browsers;
 mod config;
 mod engine;
+mod health;
 mod insights;
+mod large_files;
+mod leftovers;
+mod leveldb_ro;
 mod model;
 mod safety;
 mod server;
+mod smart_scan;
+mod startup;
 mod sysinfo_helper;
 
 use rmcp::ServiceExt;

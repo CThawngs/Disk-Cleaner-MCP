@@ -73,6 +73,8 @@ def main():
         "clientInfo": {"name": "smoke-test", "version": "0.1"},
     })
     check_ok(resp, "initialize")
+    init_info = resp["result"].get("serverInfo", {})
+    assert init_info.get("version") == "0.6.0", f"expected server version 0.6.0, got {init_info}"
 
     # 2. tools/list
     resp = srv.request("tools/list", {})
@@ -80,12 +82,16 @@ def main():
     tools = resp["result"]["tools"]
     names = [t["name"] for t in tools]
     print(f"  ✤ tools: {names}")
+
     EXPECTED_TOOLS = {
         "get_system_status", "get_metrics", "list_categories", "scan", "analyze", "get_tree",
         "file_types", "find_duplicates", "compare_scans", "organize",
         "delete", "get_report", "empty_trash", "list_trash",
+        "smart_scan", "scan_browsers", "scan_app_leftovers",
+        "scan_startup_items", "get_hardware_health", "find_large_forgotten",
     }
-    assert EXPECTED_TOOLS <= set(names), f"missing tools: {EXPECTED_TOOLS - set(names)} (got {names})"
+    assert set(names) == EXPECTED_TOOLS, f"tool mismatch: missing={EXPECTED_TOOLS - set(names)} extra={set(names) - EXPECTED_TOOLS}"
+    print(f"  ✓ verified all {len(names)} MCP tools (v0.6.0)")
 
     # 3. get_system_status
     resp = srv.request("tools/call", {
@@ -265,6 +271,163 @@ def main():
     lt = json.loads(resp["result"]["content"][0]["text"])
     assert "items" in lt and "totalItems" in lt, f"expected items/totalItems: {lt}"
     print(f"  ✓ list_trash: {lt['totalItems']} item(s) in trash")
+
+
+    # 8c. v0.6.0 E2E Suite — 6 new tools + Negative Safety Invariants
+    v06_tmp = tempfile.mkdtemp(prefix="dc-mcp-v06-")
+
+    # (A) get_hardware_health (zero-estimation + Agent I/O Guardrails)
+    hw = call_tool(srv, "get_hardware_health", {}, "get_hardware_health")
+    guard = hw.get("agentGuardrails", {})
+    assert guard.get("ioSafetyLevel") in {"green", "caution", "critical"}, f"bad guardrails: {hw}"
+    print(f"  ✤ hardware_health: ioSafetyLevel={guard.get('ioSafetyLevel')} disks={len(hw.get('disks', []))}")
+
+    # (B) smart_scan (Allowlist + AI-Stack HF .incomplete + Never-Touch .ssh trap + targetFreeBytes plan)
+    ss_root = os.path.join(v06_tmp, "smart")
+    hf_blobs = os.path.join(ss_root, "huggingface", "hub", "models--demo--llm", "blobs")
+    os.makedirs(hf_blobs, exist_ok=True)
+    with open(os.path.join(hf_blobs, "part1.incomplete"), "wb") as f:
+        f.write(b"I" * 131072)
+    ssh_trap = os.path.join(ss_root, ".ssh")
+    os.makedirs(ssh_trap, exist_ok=True)
+    with open(os.path.join(ssh_trap, "id_ed25519"), "w") as f:
+        f.write("PRIVATE-KEY-NEVER-TOUCH")
+    npm_cache = os.path.join(ss_root, "npm-cache")
+    os.makedirs(npm_cache, exist_ok=True)
+    with open(os.path.join(npm_cache, "pkg.tgz"), "wb") as f:
+        f.write(b"N" * 65536)
+
+    ss = call_tool(srv, "smart_scan", {
+        "customRootsOverride": [ss_root],
+        "targetFreeBytes": 65536,
+        "detailLevel": "brief",
+    }, "smart_scan (sandbox + reclaim planner)")
+    ss_paths = [u["path"].lower() for u in ss.get("units", [])]
+    assert not any(".ssh" in p or "id_ed25519" in p for p in ss_paths), f"Never-Touch .ssh leaked: {ss_paths}"
+    assert ss.get("planTotalBytes", 0) >= 65536 and ss.get("targetMet") is True, f"planner failed: {ss}"
+    plan_u = ss["recommendedPlan"][0]
+    ss_del = call_tool(srv, "delete", {
+        "scanId": ss["scanId"],
+        "items": [{"path": plan_u["path"], "approvalToken": plan_u["approvalToken"]}],
+        "dryRun": True,
+    }, "smart_scan -> delete (dryRun)")
+    assert ss_del.get("dryRun", 0) >= 1, f"expected dryRun=1 from smart_scan token: {ss_del}"
+
+    # (C) scan_browsers (3 groups + Never-Touch Cookies/Login Data + WebsiteStorage Trash-only gate)
+    brw_root = os.path.join(v06_tmp, "browsers")
+    prof_dir = os.path.join(brw_root, "Google", "Chrome", "User Data", "Default")
+    os.makedirs(os.path.join(prof_dir, "GPUCache"), exist_ok=True)
+    with open(os.path.join(prof_dir, "GPUCache", "data_0"), "wb") as f:
+        f.write(b"G" * 8192)
+    os.makedirs(os.path.join(prof_dir, "OptGuideOnDeviceModel"), exist_ok=True)
+    with open(os.path.join(prof_dir, "OptGuideOnDeviceModel", "weights.bin"), "wb") as f:
+        f.write(b"M" * 16384)
+    with open(os.path.join(prof_dir, "Cookies"), "wb") as f:
+        f.write(b"SECRET-COOKIES")
+    with open(os.path.join(prof_dir, "Login Data"), "wb") as f:
+        f.write(b"SECRET-PASSWORDS")
+    idb_dir = os.path.join(prof_dir, "IndexedDB", "https_example.com_0.indexeddb.leveldb")
+    os.makedirs(idb_dir, exist_ok=True)
+    with open(os.path.join(idb_dir, "000003.log"), "wb") as f:
+        f.write(b"https://example.com/app ")
+
+    b_default = call_tool(srv, "scan_browsers", {
+        "browsers": ["Chrome"],
+        "customBrowserRoot": brw_root,
+    }, "scan_browsers (default includeOrigins=false)")
+    assert len(b_default.get("disposableCache", [])) == 1, f"expected GPUCache: {b_default}"
+    assert len(b_default.get("aiModels", [])) == 1, f"expected OptGuideOnDeviceModel: {b_default}"
+    assert len(b_default.get("websiteStorage", [])) == 0, f"origins must be opt-in: {b_default}"
+    b_dump = json.dumps(b_default).lower()
+    assert "cookies" not in b_dump and "login data" not in b_dump, f"Never-Touch browser file leaked: {b_default}"
+
+    b_orig = call_tool(srv, "scan_browsers", {
+        "browsers": ["Chrome"],
+        "customBrowserRoot": brw_root,
+        "includeOrigins": True,
+    }, "scan_browsers (includeOrigins=true)")
+    assert len(b_orig.get("websiteStorage", [])) >= 1, f"expected IndexedDB origin: {b_orig}"
+    ws_item = b_orig["websiteStorage"][0]
+    # Negative test: websiteStorage MUST reject permanent=True even with confirmPermanent+confirmRisk!
+    ws_perm = call_tool(srv, "delete", {
+        "scanId": b_orig["scanId"],
+        "items": [{"path": ws_item["path"], "approvalToken": ws_item["approvalToken"]}],
+        "permanent": True,
+        "confirmPermanent": True,
+        "confirmRisk": True,
+        "dryRun": False,
+    }, "scan_browsers websiteStorage permanent=true -> rejected (Trash-only)")
+    assert ws_perm.get("rejected", 0) >= 1, f"websiteStorage must be Trash-only: {ws_perm}"
+
+    # (D) scan_app_leftovers (aged cache vs installed hint + confirmRisk gate)
+    lo_caches = os.path.join(v06_tmp, "Caches")
+    ghost_dir = os.path.join(lo_caches, "GhostUninstalledApp")
+    installed_dir = os.path.join(lo_caches, "ActiveInstalledApp")
+    os.makedirs(ghost_dir, exist_ok=True)
+    os.makedirs(installed_dir, exist_ok=True)
+    ghost_file = os.path.join(ghost_dir, "cache.bin")
+    with open(ghost_file, "wb") as f:
+        f.write(b"L" * 4096)
+    with open(os.path.join(installed_dir, "cache.bin"), "wb") as f:
+        f.write(b"A" * 4096)
+    old_ts = time.time() - (45 * 86400)
+    os.utime(ghost_file, (old_ts, old_ts))
+    os.utime(ghost_dir, (old_ts, old_ts))
+
+    lo = call_tool(srv, "scan_app_leftovers", {
+        "minAgeDays": 30,
+        "customScanRoots": [lo_caches],
+        "installedHints": ["ActiveInstalledApp"],
+    }, "scan_app_leftovers")
+    safe_lo = lo.get("safeLeftovers", [])
+    assert any("GhostUninstalledApp" in x["name"] for x in safe_lo), f"expected GhostUninstalledApp: {lo}"
+    assert not any("ActiveInstalledApp" in x["name"] for x in safe_lo), f"installed app must be skipped: {lo}"
+    lo_item = [x for x in safe_lo if "GhostUninstalledApp" in x["name"]][0]
+    lo_rej = call_tool(srv, "delete", {
+        "scanId": lo["scanId"],
+        "items": [{"path": lo_item["path"], "approvalToken": lo_item["approvalToken"]}],
+        "confirmRisk": False,
+        "dryRun": False,
+    }, "scan_app_leftovers delete without confirmRisk -> rejected")
+    assert lo_rej.get("rejected", 0) >= 1, f"review leftover must require confirmRisk: {lo_rej}"
+
+    # (E) scan_startup_items (orphaned binary + CLI secret redaction)
+    st_dir = os.path.join(v06_tmp, "startup")
+    os.makedirs(st_dir, exist_ok=True)
+    missing_bin = os.path.join(v06_tmp, "nonexistent_daemon.exe" if platform.system() == "Windows" else "nonexistent_daemon")
+    desktop_entry = os.path.join(st_dir, "ghost-agent.desktop")
+    with open(desktop_entry, "w", encoding="utf-8") as f:
+        f.write(f"[Desktop Entry]\nType=Application\nName=GhostAgent\nExec=\"{missing_bin}\" --api-key sk-live-SUPERSECRET999\n")
+    st = call_tool(srv, "scan_startup_items", {
+        "customDir": st_dir,
+        "orphansOnly": True,
+    }, "scan_startup_items (orphan + secret redaction)")
+    assert st.get("orphanedCount", 0) == 1, f"expected 1 orphaned startup item: {st}"
+    st_raw = json.dumps(st)
+    assert "SUPERSECRET999" not in st_raw, f"CLI secret leaked in startup report: {st_raw}"
+    assert st["items"][0].get("approvalToken"), f"writable startup orphan must have approvalToken: {st}"
+
+    # (F) find_large_forgotten (semantic ml_model kind + review token)
+    lf_dir = os.path.join(v06_tmp, "large")
+    os.makedirs(lf_dir, exist_ok=True)
+    gguf_path = os.path.join(lf_dir, "forgotten-q4.gguf")
+    with open(gguf_path, "wb") as f:
+        f.write(b"Q" * (1100 * 1024))
+    os.utime(gguf_path, (old_ts, old_ts))
+    lf = call_tool(srv, "find_large_forgotten", {
+        "root": lf_dir,
+        "minSize": 1024 * 1024,
+        "unusedDays": 30,
+    }, "find_large_forgotten")
+    assert lf.get("totalMatchedFiles", 0) == 1 and lf["files"][0]["semanticKind"] == "ml_model", f"expected ml_model: {lf}"
+    assert lf["files"][0].get("approvalToken"), f"expected approvalToken on large file: {lf}"
+
+    # (G) get_report on a custom v0.6.0 session
+    rep = srv.request("tools/call", {"name": "get_report", "arguments": {"scanId": lf["scanId"]}})
+    check_ok(resp=rep, label="get_report (v0.6.0 session)")
+
+    import shutil as _shutil
+    _shutil.rmtree(v06_tmp, ignore_errors=True)
 
     # 9. cleanup temp dir
     import shutil

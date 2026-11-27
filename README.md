@@ -14,19 +14,27 @@ A **Rust-based MCP (Model Context Protocol) server** that gives AI agents — He
 
 ## ✨ Features
 
-- **14 MCP tools**:
+- **100% Pure Headless MCP Server (Zero GUI, Zero Telemetry)** — purpose-built for AI Agents & Coding Agents (`Claude Code`, `Cursor`, `Codex`, `Antigravity`, `OpenCode`, `Hermes`, `DeepSeek Harness`, `OpenMausBot`).
+- **20 MCP tools**:
   | Tool | Description |
   |---|---|
   | `get_system_status` | Disk usage, user directories, platform info |
-  | `list_categories` | All junk categories + descriptions |
+  | `get_metrics` | Aggregated disk metrics across mounted volumes (gated by `DCM_TELEMETRY`) |
+  | `get_hardware_health` | **NEW (v0.6.0)** — Zero-estimation Battery + SSD SMART health + deterministic **Agent I/O Guardrails** (`ioSafetyLevel`, `avoidHeavyDiskHash`, `minimizeWriteChurn`, `diskPressureAction`) with serial/UUID redaction |
+  | `smart_scan` | **NEW (v0.6.0)** — Zero-config Allowlist Smart Scan + Dev/Package caches + **AI-Stack Surgical Cleaner** (`HuggingFace *.incomplete`, `Ollama` orphan blobs, superseded `Playwright` browsers, AI IDE disposable caches with live-process Anti-Suicide lock) + `targetFreeBytes` reclaim planner |
+  | `scan_browsers` | **NEW (v0.6.0)** — Per-browser & per-profile audit across 10 Chromium browsers + Firefox (`disposableCache` Green, `aiModels` Yellow incl. Gemini Nano/SODA/ScreenAI, opt-in `websiteStorage` Yellow via pure-Rust read-only LevelDB) |
+  | `scan_app_leftovers` | **NEW (v0.6.0)** — Cross-platform orphaned app leftovers (`safeLeftovers` caches/logs vs `userData` profiles, `minAgeDays` default 30) |
+  | `scan_startup_items` | **NEW (v0.6.0)** — Cross-platform Startup / LaunchAgents / systemd-user orphan detector with CLI secret redaction |
+  | `find_large_forgotten` | **NEW (v0.6.0)** — Large & forgotten files grouped into 8 semantic kinds (`video`, `archive`, `installer`, `ml_model`, `disk_image`, `audio`, `image`, `document`, `other`) |
+  | `list_categories` | All 20 junk & storage categories + descriptions |
   | `scan` | Scan a root path (`maxEntries` 100–2M, `maxDepth` 1–64 caps), returns `scanId` + summary |
   | `analyze` | Filter/page entries (category, size, age, sort), returns approval tokens |
   | `get_tree` | **TreeSize-style folder tree** — recursive size per folder ("where did the space go?") |
   | `file_types` | **TreeSize-style file-type breakdown** — size/count per extension |
-  | `find_duplicates` | **TreeSize-style duplicate finder** — size prefilter + SHA-256 (files >4GB use sampled hash, flagged `partial` — verify before delete), returns deletion tokens |
+  | `find_duplicates` | **SIMD `BLAKE3` duplicate finder** — size + head/tail prefilter + streaming `BLAKE3`, skips Cloud-Only placeholders (OneDrive/iCloud) & Unix hardlinks |
   | `compare_scans` | **TreeSize-style diff** — what changed between two scans (added/removed/grown, net delta) |
   | `organize` | **Sort files into a destination tree by category or extension** (dry-run supported, never overwrites) |
-  | `delete` | Move files to trash / permanent (requires double confirmation). Brain judges every file first: `blocked` never, `review`/`keep` need `confirm_risk=true` |
+  | `delete` | Move files to trash / permanent (requires double confirmation). Brain judges every file first: `blocked` never, `review`/`keep` need `confirm_risk=true`, `browser_site_data` is Trash-only |
   | `get_report` | Markdown report of a scan |
   | `empty_trash` | **Permanently purge the OS Recycle Bin / Trash** (irreversible, requires `confirm=true`) — use after `delete` to reclaim space |
   | `list_trash` | List current Recycle Bin / Trash contents (newest first, `limit` 1–500) |
@@ -38,7 +46,8 @@ A **Rust-based MCP (Model Context Protocol) server** that gives AI agents — He
   - Every delete/organize requires an **approval token** (SHA-256 of salt + path) issued per scan — stale/mismatched tokens are rejected
   - `organize` **never overwrites**: if the destination file exists, it's skipped
 
-- **13 junk categories**: `temp`, `log`, `cache`, `browser_cache`, `node_cache`, `python_cache`, `installer`, `download`, `backup`, `archive`, `crash_dump`, `thumbnail`, `other`
+- **20 junk & storage categories**: `temp`, `log`, `cache`, `browser_cache`, `browser_ai_model`, `browser_site_data`, `node_cache`, `python_cache`, `dev_cache`, `ml_cache`, `app_leftover`, `startup_orphan`, `large_forgotten`, `installer`, `download`, `backup`, `archive`, `crash_dump`, `thumbnail`, `other`
+- **Hard Never-Touch Guard**: Passwords/`Login Data`, `Cookies`, `History`, `Bookmarks`, `Local Storage`, `Extensions`, `key4.db`, `.ssh`, `.gnupg`, `.aws`, `.kube`, `.env*`, Keychains, and DPAPI vaults are strictly blocked at both scan and delete time.
 
 - **Multithreaded scan**: `jwalk` parallel directory walker + `rayon` metadata extraction
 
@@ -297,3 +306,9 @@ User: "Dọn rác temp giúp tôi"
 ## 📄 License
 
 MIT — free to use, modify, and distribute. No fees, no telemetry, no cloud dependency — **100% free forever**.
+
+---
+
+## 🙏 Acknowledgements
+
+Several `v0.6.0` cross-platform capability concepts (Allowlist Smart Scan taxonomy, 3-tier Browser Cleanup + On-Device AI Models, Orphaned App Leftovers & Startup Items, Zero-Estimation SSD SMART / Battery Health, and Read-Only LevelDB origin inspection) were inspired by [**MacSweep**](https://github.com/nihal4/macsweep) (`MIT License`, Copyright (c) 2026 S. M. Nihal Ahmed) and re-architected as a 100% pure headless cross-platform MCP server for AI Agents on Windows, macOS, and Linux. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for full license notices.

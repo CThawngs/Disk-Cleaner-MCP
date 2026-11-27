@@ -126,11 +126,16 @@ impl ScanAcc {
         let (size, modified) = dir_size_safe(p);
         (size > 0).then_some(())?;
         let (b, prof, grp, nm) = m;
-        let (cat, verd, sc, rk) = match (grp, r) {
-            ("ai_models", _) => ("browser_ai_model", "review", 45, "caution"),
-            ("website_storage", _) => ("browser_site_data", "review", 55, "caution"),
-            (_, true) => ("browser_cache", "blocked", 100, "blocked"),
-            _ => ("browser_cache", "safe_to_delete", 10, "safe"),
+        let cat = match grp {
+            "ai_models" => "browser_ai_model",
+            "website_storage" => "browser_site_data",
+            _ => "browser_cache",
+        };
+        let (verd, sc, rk) = match (grp, r) {
+            (_, true) => ("blocked", 100, "blocked"),
+            ("ai_models", _) => ("review", 45, "caution"),
+            ("website_storage", _) => ("review", 55, "caution"),
+            _ => ("safe_to_delete", 10, "safe"),
         };
         self.candidates.push(CustomCandidate {
             kind: "dir".into(),
@@ -478,6 +483,7 @@ Profile 1/Service Worker/CacheStorage/h1/index.txt";
         let live = HashSet::from(["chrome".to_string()]);
         let r_blk = scan_inner(&eng, &p, Some(&live));
         assert_eq!(r_blk.disposable_cache[0].verdict, "blocked");
+        assert_eq!(r_blk.ai_models[0].verdict, "blocked");
         p.include_origins = Some(true);
         let r_orig = scan_inner(&eng, &p, Some(&empty));
         assert!(r_orig.website_storage.len() == 2 && r_orig.website_storage[0].origin.is_some());
