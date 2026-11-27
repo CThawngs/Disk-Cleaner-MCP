@@ -15,6 +15,21 @@ const MAX_SCAN_ENTRIES: usize = 200_000;
 const MAX_SCAN_DEPTH: usize = 15;
 
 /// One scan session.
+/// Candidate entry produced by specialized v0.6.0 scanners (`smart_scan`,
+/// `scan_browsers`, `scan_app_leftovers`, `scan_startup_items`, `find_large_forgotten`).
+#[derive(Debug, Clone)]
+pub struct CustomCandidate {
+    pub kind: String, // "file" | "dir"
+    pub path: PathBuf,
+    pub size: u64,
+    pub modified: Option<i64>,
+    pub category: String,
+    pub verdict: String, // "safe_to_delete" | "review" | "keep" | "blocked"
+    pub importance_score: u8,
+    pub risk_level: String, // "safe" | "caution" | "dangerous" | "blocked"
+    pub reasons: Vec<String>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanSession {
@@ -107,6 +122,168 @@ impl ScanEngine {
         let file = Self::snapshot_dir()?.join(format!("{scan_id}.json"));
         let json = std::fs::read_to_string(file).ok()?;
         serde_json::from_str(&json).ok()
+    }
+
+    fn push_session_opts(&self, session: ScanSession, persist: bool) -> Arc<ScanSession> {
+        if persist {
+            Self::save_session(&session);
+        }
+        let arc = Arc::new(session);
+        {
+            let mut sessions = self.sessions.write().unwrap_or_else(|e| e.into_inner());
+            let mut order = self.order.write().unwrap_or_else(|e| e.into_inner());
+            if !sessions.contains_key(&arc.scan_id) {
+                order.push_back(arc.scan_id.clone());
+            }
+            sessions.insert(arc.scan_id.clone(), arc.clone());
+            while order.len() > 8 {
+                if let Some(old) = order.pop_front() {
+                    sessions.remove(&old);
+                }
+            }
+        }
+        arc
+    }
+
+    /// Register a specialized v0.6.0 scan session so all returned items/units
+    /// carry genuine CSPRNG-salted `approvalToken`s and work seamlessly with
+    /// `delete()`, `analyze()`, `get_report()`, and `compare_scans()`.
+    /// Set `persist_snapshot = false` when entries include opt-in sensitive
+    /// metadata such as per-site browser origins.
+    #[allow(dead_code)]
+    pub fn register_custom_session(
+        &self,
+        root_label: &str,
+        candidates: Vec<CustomCandidate>,
+        warnings: Vec<String>,
+        duration_ms: u64,
+        persist_snapshot: bool,
+    ) -> Arc<ScanSession> {
+        let now_epoch = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let scan_id = generate_id();
+        let salt = safety::generate_salt();
+
+        let mut files_scanned = 0u64;
+        let mut dirs_scanned = 0u64;
+        let mut total_size = 0u64;
+        let mut safe_count = 0u64;
+        let mut review_count = 0u64;
+        let mut keep_count = 0u64;
+        let mut blocked_count = 0u64;
+        let mut reclaimable_bytes = 0u64;
+        let mut cat_map: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+        let mut entries = Vec::with_capacity(candidates.len());
+
+        for c in candidates {
+            if c.kind == "dir" {
+                dirs_scanned += 1;
+            } else {
+                files_scanned += 1;
+            }
+            total_size = total_size.saturating_add(c.size);
+
+            let path_str = c.path.to_string_lossy().to_string();
+            let approval_token = safety::compute_token(&salt, &path_str);
+            let ext = if c.kind == "file" {
+                c.path
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_lowercase())
+            } else {
+                None
+            };
+
+            let (verdict, importance_score, risk_level, mut reasons) =
+                if safety::is_protected(&c.path) {
+                    let mut r = c.reasons;
+                    if let Some(nt) = safety::sensitive_never_touch_reason(&c.path) {
+                        r.push(nt.to_string());
+                    } else {
+                        r.push("Protected system or sensitive path".into());
+                    }
+                    ("blocked".to_string(), 100u8, "blocked".to_string(), r)
+                } else {
+                    (c.verdict, c.importance_score, c.risk_level, c.reasons)
+                };
+            if reasons.is_empty() {
+                reasons.push("Categorized by v0.6.0 specialized scanner".into());
+            }
+
+            match verdict.as_str() {
+                "safe_to_delete" => {
+                    safe_count += 1;
+                    reclaimable_bytes = reclaimable_bytes.saturating_add(c.size);
+                }
+                "review" => review_count += 1,
+                "keep" => keep_count += 1,
+                _ => blocked_count += 1,
+            }
+
+            let ce = cat_map.entry(c.category.clone()).or_insert((0, 0));
+            ce.0 += 1;
+            ce.1 = ce.1.saturating_add(c.size);
+
+            entries.push(ScanEntry {
+                kind: c.kind,
+                path: path_str,
+                size: c.size,
+                modified: c.modified,
+                extension: ext,
+                category_label: category_label_for(&c.category),
+                category: c.category,
+                approval_token,
+                depth: 1,
+                verdict,
+                importance_score,
+                risk_level,
+                reasons,
+            });
+        }
+
+        let category_totals: Vec<CategoryTotal> = cat_map
+            .into_iter()
+            .map(|(k, (count, size))| CategoryTotal {
+                category_label: category_label_for(&k),
+                category: k,
+                count,
+                size,
+            })
+            .collect();
+
+        let mut largest = entries.clone();
+        largest.sort_by_key(|e| std::cmp::Reverse(e.size));
+        largest.truncate(20);
+
+        let summary = ScanSummary {
+            scan_id: scan_id.clone(),
+            started_at: now_epoch,
+            duration_ms,
+            root: root_label.to_string(),
+            files_scanned,
+            dirs_scanned,
+            total_size,
+            truncated: false,
+            max_entries: entries.len().max(1),
+            version: VERSION.into(),
+            category_totals,
+            largest_entries: largest,
+            warnings,
+            safe_count,
+            review_count,
+            keep_count,
+            blocked_count,
+            reclaimable_bytes,
+        };
+
+        let session = ScanSession {
+            scan_id,
+            salt,
+            summary,
+            entries,
+        };
+        self.push_session_opts(session, persist_snapshot)
     }
 
     fn push_session(&self, session: ScanSession) -> Arc<ScanSession> {

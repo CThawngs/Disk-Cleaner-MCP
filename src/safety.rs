@@ -169,8 +169,145 @@ fn strip_ads(s: &str) -> String {
     s.to_string()
 }
 
+/// Exact path components (dir or file names, lowercased) that must NEVER be
+/// touched, hashed for cleanup, or deleted by any tool (Never-Touch Invariant).
+const NEVER_TOUCH_COMPONENTS: &[&str] = &[
+    ".ssh",
+    ".gnupg",
+    ".gpg",
+    ".aws",
+    ".azure",
+    ".kube",
+    ".password-store",
+    "keychains",
+    "keyrings",
+    "kwalletd",
+    "1password",
+    "bitwarden",
+    "keepass",
+    "keepassxc",
+    "lastpass",
+    "dashlane",
+    "protonpass",
+    "cloudkit",
+    "com.apple.akd",
+    "com.apple.bird",
+    "com.apple.clouddocs",
+    "com.apple.passd",
+    "mobile documents",
+    "cookies",
+    "login data",
+    "login data for account",
+    "web data",
+    "bookmarks",
+    "bookmarks.bak",
+    "favicons",
+    "favicons.sqlite",
+    "local storage",
+    "session storage",
+    "extensions",
+    "local extension settings",
+    "sync extension settings",
+    "sync data",
+    "secure preferences",
+    "key4.db",
+    "logins.json",
+    "places.sqlite",
+    "cookies.sqlite",
+    "formhistory.sqlite",
+    "cert9.db",
+];
+
+const NEVER_TOUCH_FILES: &[&str] = &[
+    ".env",
+    ".env.local",
+    ".env.production",
+    ".npmrc",
+    ".pypirc",
+    ".netrc",
+    ".git-credentials",
+    "credentials.toml",
+];
+
+const BROWSER_MARKERS: &[&str] = &[
+    "google/chrome",
+    "chrome beta",
+    "chrome sxs",
+    "chrome canary",
+    "microsoft/edge",
+    "microsoft edge",
+    "bravesoftware",
+    "brave-browser",
+    "vivaldi",
+    "opera software",
+    "com.operasoftware",
+    "arc/user data",
+    "chromium",
+    "mozilla/firefox",
+    "firefox/profiles",
+];
+
+/// Returns `Some(reason)` if `path` targets sensitive credentials, keychains,
+/// password managers, or protected browser profile data (passwords, cookies,
+/// history, bookmarks, local storage, extensions).
+pub fn sensitive_never_touch_reason(path: &Path) -> Option<&'static str> {
+    let raw = strip_ads(&path.to_string_lossy()).replace('\\', "/");
+    let lower = raw.to_lowercase();
+
+    // Windows Credential Manager / DPAPI vaults
+    for sub in [
+        "/microsoft/credentials",
+        "/microsoft/protect",
+        "/microsoft/vault",
+        "/microsoft/tokenbroker",
+    ] {
+        if lower.ends_with(sub) || lower.contains(&format!("{sub}/")) {
+            return Some("OS credential vault / DPAPI store is Never-Touch protected");
+        }
+    }
+
+    if lower.ends_with("/.config/gh")
+        || lower.contains("/.config/gh/")
+        || lower.ends_with("/.config/gcloud")
+        || lower.contains("/.config/gcloud/")
+        || lower.ends_with("/.docker/config.json")
+    {
+        return Some("Developer cloud/CLI credential store is Never-Touch protected");
+    }
+
+    let in_browser = BROWSER_MARKERS.iter().any(|m| lower.contains(m));
+
+    for seg in lower.split('/').filter(|s| !s.is_empty()) {
+        if NEVER_TOUCH_COMPONENTS.contains(&seg) {
+            return Some(
+                "Sensitive credential, keychain, or browser user-state is Never-Touch protected",
+            );
+        }
+        if in_browser
+            && matches!(
+                seg,
+                "history" | "history-journal" | "preferences" | "local state"
+            )
+        {
+            return Some("Browser history/preferences/state is Never-Touch protected");
+        }
+    }
+
+    if let Some(fname) = path.file_name().map(|f| f.to_string_lossy().to_lowercase()) {
+        let fname_clean = strip_ads(&fname);
+        if NEVER_TOUCH_FILES.contains(&fname_clean.as_str()) {
+            return Some("Credential/secret Dotfile is Never-Touch protected");
+        }
+    }
+
+    None
+}
+
 /// Check if a path is protected (must NEVER be deleted).
 pub fn is_protected(path: &Path) -> bool {
+    if sensitive_never_touch_reason(path).is_some() {
+        return true;
+    }
     // User `protectedExtra` rules: additions only, never lift a built-in block.
     if crate::config::is_extra_protected(path) {
         return true;
@@ -373,6 +510,39 @@ mod tests {
     fn test_protected_pagefile() {
         let p = Path::new("C:\\pagefile.sys");
         assert!(is_protected(p));
+    }
+
+    #[test]
+    fn test_sensitive_never_touch_guards() {
+        assert!(is_protected(Path::new("/home/alice/.ssh/id_ed25519")));
+        assert!(is_protected(Path::new("C:/Users/alice/.aws/credentials")));
+        assert!(is_protected(Path::new(
+            "C:/Users/alice/AppData/Local/Google/Chrome/User Data/Default/Cookies"
+        )));
+        assert!(is_protected(Path::new(
+            "C:/Users/alice/AppData/Local/Google/Chrome/User Data/Default/Network/Cookies"
+        )));
+        assert!(is_protected(Path::new(
+            "C:/Users/alice/AppData/Local/Google/Chrome/User Data/Default/Login Data"
+        )));
+        assert!(is_protected(Path::new(
+            "C:/Users/alice/AppData/Local/Google/Chrome/User Data/Default/Local Storage/leveldb"
+        )));
+        assert!(is_protected(Path::new(
+            "C:/Users/alice/AppData/Local/Google/Chrome/User Data/Default/History"
+        )));
+        assert!(is_protected(Path::new(
+            "C:/Users/alice/AppData/Roaming/Mozilla/Firefox/Profiles/abc.default/key4.db"
+        )));
+        // Disposable browser caches and AI models remain allowed
+        assert!(sensitive_never_touch_reason(Path::new(
+            "C:/Users/alice/AppData/Local/Google/Chrome/User Data/Default/GPUCache"
+        ))
+        .is_none());
+        assert!(sensitive_never_touch_reason(Path::new(
+            "C:/Users/alice/AppData/Local/Google/Chrome/User Data/OptGuideOnDeviceModel"
+        ))
+        .is_none());
     }
 
     #[test]
