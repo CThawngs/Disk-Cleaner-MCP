@@ -1,0 +1,38 @@
+Power:
+
+    Battery Information:
+
+      Model Information:
+          Manufacturer: GenericAppleSynth
+          Device Name: bq40z651
+          Serial Number: REDACTED-MAC-BAT-SN-7777
+      Charge Information:
+          Fully Charged: No
+          Charging: No
+          State of Charge (%): 68
+      Health Information:
+          Cycle Count: 142
+          Condition: Normal
+          Maximum Capacity: 91%
+
+    AC Charger Information:
+
+      Connected: No
+      Charging: No
+
+NVMExpress:
+
+    Apple Fabric:
+
+        APPLE SSD SYNTH1024:
+
+          Capacity: 1 TB (1,000,555,581,440 bytes)
+          TRIM Support: Yes
+          Model: APPLE SSD SYNTH1024
+          Revision: 1.0
+          Serial Number: REDACTED-MAC-SSD-SN-8888
+          Detachable Drive: No
+          BSD Name: disk0
+          Partition Map Type: GPT (GUID Partition Table)
+          Removable Media: No
+          S.M.A.R.T. status: Verified

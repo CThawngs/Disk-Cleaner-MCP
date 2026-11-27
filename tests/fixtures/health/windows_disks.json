@@ -1,0 +1,36 @@
+[
+  {
+    "FriendlyName": "Synthetic NVMe SSD 1TB",
+    "SerialNumber": "REDACTED-WIN-DISK-SN-0001",
+    "UniqueId": "eui.0000000000000001",
+    "DeviceId": "0",
+    "MediaType": "SSD",
+    "BusType": "NVMe",
+    "HealthStatus": "Healthy",
+    "OperationalStatus": "OK",
+    "Size": 1000204886016,
+    "Wear": 4,
+    "Temperature": 39,
+    "PowerOnHours": 3120,
+    "ReadErrorsTotal": 0,
+    "WriteErrorsTotal": 0,
+    "SmartAvailable": true,
+    "UnavailableReason": null
+  },
+  {
+    "FriendlyName": "Synthetic SATA Backup 2TB",
+    "SerialNumber": "REDACTED-WIN-DISK-SN-0002",
+    "MediaType": "SSD",
+    "BusType": "SATA",
+    "HealthStatus": "Healthy",
+    "OperationalStatus": "OK",
+    "Size": 2000398934016,
+    "Wear": null,
+    "Temperature": null,
+    "PowerOnHours": null,
+    "ReadErrorsTotal": null,
+    "WriteErrorsTotal": null,
+    "SmartAvailable": false,
+    "UnavailableReason": "SMART reliability counters require elevated privileges on Windows"
+  }
+]
