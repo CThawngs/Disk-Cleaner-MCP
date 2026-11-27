@@ -68,6 +68,41 @@ pub fn all_categories() -> Vec<CategoryInfo> {
             description: "Thumbnail cache files (thumbs.db, .thumbs)".into(),
         },
         CategoryInfo {
+            key: "dev_cache".into(),
+            label: "Developer Build & Package Cache".into(),
+            description: "Cargo, Gradle, Maven, Go, NuGet, uv, pnpm, Bun, Xcode caches".into(),
+        },
+        CategoryInfo {
+            key: "ml_cache".into(),
+            label: "AI & ML Model Cache".into(),
+            description: "HuggingFace, PyTorch, Ollama orphan blobs, Playwright revisions, AI IDE caches".into(),
+        },
+        CategoryInfo {
+            key: "browser_ai_model".into(),
+            label: "Browser On-Device AI Models".into(),
+            description: "Downloaded browser AI weights (Gemini Nano, Screen AI, SODA, OptGuide)".into(),
+        },
+        CategoryInfo {
+            key: "browser_site_data".into(),
+            label: "Browser Website Storage".into(),
+            description: "Per-site IndexedDB, CacheStorage, and File System origins (opt-in review)".into(),
+        },
+        CategoryInfo {
+            key: "app_leftover".into(),
+            label: "Orphaned App Leftovers".into(),
+            description: "Residual caches, logs, or data from uninstalled applications".into(),
+        },
+        CategoryInfo {
+            key: "startup_orphan".into(),
+            label: "Orphaned Startup Items".into(),
+            description: "Launch agents, autostart entries, or startup shortcuts pointing to missing binaries".into(),
+        },
+        CategoryInfo {
+            key: "large_forgotten".into(),
+            label: "Large & Forgotten Files".into(),
+            description: "Large files unused for an extended period grouped by semantic kind".into(),
+        },
+        CategoryInfo {
             key: "other".into(),
             label: "Other".into(),
             description: "Uncategorized files".into(),

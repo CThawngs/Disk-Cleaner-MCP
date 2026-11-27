@@ -6,7 +6,7 @@ use crate::insights;
 use crate::model::*;
 use crate::sysinfo_helper;
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
-use rmcp::model::{ServerCapabilities, ServerInfo};
+use rmcp::model::{ServerCapabilities, ServerConfig};
 use rmcp::{tool, tool_handler, tool_router, ServerHandler};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -43,8 +43,12 @@ impl DiskCleanerServer {
         description = "Get system info: platform (Windows/macOS/Linux), disk usage, home/temp/download dirs. Read-only, safe to call anytime."
     )]
     async fn get_system_status(&self) -> String {
-        let status = sysinfo_helper::get_system_status();
-        serde_json::to_string_pretty(&status).unwrap_or_else(|e| format!("Error: {}", e))
+        match tokio::task::spawn_blocking(sysinfo_helper::get_system_status).await {
+            Ok(status) => {
+                serde_json::to_string_pretty(&status).unwrap_or_else(|e| format!("Error: {}", e))
+            }
+            Err(e) => format!("Error: {e}"),
+        }
     }
 
     /// Get aggregated disk metrics: disk count, total/used/available/trash bytes, max usage.
@@ -54,13 +58,17 @@ impl DiskCleanerServer {
         description = "Get aggregated disk metrics (sums across all mounted volumes). Returns zeroed metrics unless DCM_TELEMETRY env var is set. Read-only."
     )]
     async fn get_metrics(&self) -> String {
-        let status = sysinfo_helper::get_system_status();
-        let metrics = if status.telemetry_enabled {
-            status.metrics
-        } else {
-            Metrics::default()
-        };
-        serde_json::to_string_pretty(&metrics).unwrap_or_else(|e| format!("Error: {}", e))
+        match tokio::task::spawn_blocking(sysinfo_helper::get_system_status).await {
+            Ok(status) => {
+                let metrics = if status.telemetry_enabled {
+                    status.metrics
+                } else {
+                    Metrics::default()
+                };
+                serde_json::to_string_pretty(&metrics).unwrap_or_else(|e| format!("Error: {}", e))
+            }
+            Err(e) => format!("Error: {e}"),
+        }
     }
 
     /// List all junk categories.
@@ -282,7 +290,7 @@ impl DiskCleanerServer {
     /// Content-hash duplicate finder with safe-delete tokens.
     #[tool(
         name = "find_duplicates",
-        description = "TreeSize-style duplicate file finder: groups files with byte-identical content (same size + SHA-256; files >4GB use sampled head+tail hash, flagged partial — verify before delete), reports wasted bytes, and returns each copy's approvalToken so you can delete redundant copies via delete(). Content is only read for files that share a size with another file.\n\nParameters:\n- scanId: from scan()\n- minSize: minimum file size in bytes to consider (default 1048576 = 1 MiB; use 0 to include small files)\n- top: max groups returned (default 50), sorted by wasted bytes desc.\n\nSafety: never delete ALL copies — keep at least one (files are oldest-first; files[0] is usually the original)."
+        description = "TreeSize-style duplicate file finder: groups files with byte-identical content (same size + SIMD BLAKE3; files >4GB use sampled head+tail hash, flagged partial — verify before delete), skips Cloud-Only placeholders (OneDrive/iCloud) and Unix hardlinks, reports wasted bytes, and returns each copy's approvalToken so you can delete redundant copies via delete().\n\nParameters:\n- scanId: from scan()\n- minSize: minimum file size in bytes to consider (default 1048576 = 1 MiB; use 0 to include small files)\n- top: max groups returned (default 50), sorted by wasted bytes desc.\n\nSafety: never delete ALL copies — keep at least one (files are oldest-first; files[0] is usually the original)."
     )]
     async fn find_duplicates(&self, Parameters(params): Parameters<DuplicateParams>) -> String {
         match self.engine.get_session(&params.scan_id) {
@@ -371,22 +379,135 @@ impl DiskCleanerServer {
             });
         serde_json::to_string_pretty(&result).unwrap_or_else(|e| format!("Error: {}", e))
     }
+
+    /// Allowlist Smart Scan + AI-Stack Surgical Cleaner + Goal-Driven Reclaim Planner.
+    #[tool(
+        name = "smart_scan",
+        description = "Zero-config Allowlist Smart Scan for AI Agents across OS temp/logs/shader caches, Dev/Package caches (npm, pnpm, yarn, bun, pip, uv, poetry, cargo, gradle, maven, go-build, nuget, Xcode), and AI-Stack Surgical Cleaner (HuggingFace *.incomplete vs snapshots, Ollama manifest-diff orphan blobs, superseded Playwright browser revisions, and disposable caches of Cursor/VS Code/Windsurf/Antigravity/OpenCode with live-process Anti-Suicide lock).\n\nReturns compact Cleanup Units (~1-4 KB in 'brief' mode), optional targetFreeBytes reclaim plan, and a scanId + approvalToken per unit ready for delete() (dryRun=true default, Recycle Bin/Trash default)."
+    )]
+    async fn smart_scan(
+        &self,
+        Parameters(params): Parameters<crate::smart_scan::SmartScanParams>,
+    ) -> String {
+        let engine = self.engine.clone();
+        let res = tokio::task::spawn_blocking(move || {
+            crate::smart_scan::run_smart_scan(&engine, &params)
+        })
+        .await;
+        match res {
+            Ok(r) => serde_json::to_string_pretty(&r).unwrap_or_else(|e| format!("Error: {e}")),
+            Err(e) => format!("{{\"error\":true,\"message\":\"smart_scan failed: {e}\"}}"),
+        }
+    }
+
+    /// Per-browser & per-profile cleanup audit (caches, on-device AI models, opt-in website storage).
+    #[tool(
+        name = "scan_browsers",
+        description = "Cross-platform browser storage audit across 10 Chromium browsers (Chrome, Beta, Canary, Edge, Brave, Arc, Vivaldi, Opera, Opera GX, Chromium) + Firefox. Strictly separates: (1) disposableCache (safe_to_delete, or blocked when browser is running), (2) aiModels (review: Gemini Nano OptGuideOnDeviceModel, OptGuidePredictionModels, screen_ai, SODA), and (3) websiteStorage (review, opt-in via includeOrigins=true, Trash-only).\n\nNever-Touch Guard: Passwords/Login Data, Cookies, History, Bookmarks, Local Storage, Extensions, key4.db, and logins.json are strictly excluded and blocked."
+    )]
+    async fn scan_browsers(
+        &self,
+        Parameters(params): Parameters<crate::browsers::BrowserScanParams>,
+    ) -> String {
+        let engine = self.engine.clone();
+        let res =
+            tokio::task::spawn_blocking(move || crate::browsers::scan_browsers(&engine, &params))
+                .await;
+        match res {
+            Ok(r) => serde_json::to_string_pretty(&r).unwrap_or_else(|e| format!("Error: {e}")),
+            Err(e) => format!("{{\"error\":true,\"message\":\"scan_browsers failed: {e}\"}}"),
+        }
+    }
+
+    /// Orphaned application leftovers detector (safe caches/logs vs user data).
+    #[tool(
+        name = "scan_app_leftovers",
+        description = "Cross-platform orphaned app leftover audit: compares installed applications (Windows Uninstall Registry + Program Files, macOS /Applications + Info.plist, Linux .desktop/Flatpak/Snap) against user data/cache directories (minAgeDays default 30).\n\nStrictly splits safeLeftovers (caches/logs/crashpad -> verdict 'review') from userData (profiles/configs -> verdict 'keep'). Never uninstalls active apps."
+    )]
+    async fn scan_app_leftovers(
+        &self,
+        Parameters(params): Parameters<crate::leftovers::LeftoversParams>,
+    ) -> String {
+        let engine = self.engine.clone();
+        let res = tokio::task::spawn_blocking(move || {
+            crate::leftovers::scan_app_leftovers(&engine, &params)
+        })
+        .await;
+        match res {
+            Ok(r) => serde_json::to_string_pretty(&r).unwrap_or_else(|e| format!("Error: {e}")),
+            Err(e) => format!("{{\"error\":true,\"message\":\"scan_app_leftovers failed: {e}\"}}"),
+        }
+    }
+
+    /// Startup & LaunchAgents audit with orphaned binary detection and CLI secret redaction.
+    #[tool(
+        name = "scan_startup_items",
+        description = "Audit startup & login items across Windows (HKCU/HKLM Run read-only + Startup folder .lnk/scripts), macOS (LaunchAgents/LaunchDaemons .plist), and Linux (~/.config/autostart/*.desktop + systemd user services). Redacts CLI secrets (--token/--key/--password/--secret), flags orphaned=true when target binary is missing on mounted disk, and issues approvalToken (review) only for user-writable orphaned startup files."
+    )]
+    async fn scan_startup_items(
+        &self,
+        Parameters(params): Parameters<crate::startup::StartupParams>,
+    ) -> String {
+        let engine = self.engine.clone();
+        let res = tokio::task::spawn_blocking(move || {
+            crate::startup::scan_startup_items(&engine, &params)
+        })
+        .await;
+        match res {
+            Ok(r) => serde_json::to_string_pretty(&r).unwrap_or_else(|e| format!("Error: {e}")),
+            Err(e) => format!("{{\"error\":true,\"message\":\"scan_startup_items failed: {e}\"}}"),
+        }
+    }
+
+    /// Zero-estimation Battery & SSD SMART health + Agent I/O Guardrails.
+    #[tool(
+        name = "get_hardware_health",
+        description = "Read-only Battery & SSD SMART health audit + deterministic Agent I/O Guardrails (ioSafetyLevel, avoidHeavyDiskHash, minimizeWriteChurn, diskPressureAction). Zero-estimation: unavailable metrics return null + unavailableReason, and hardware serials/UUIDs/WWNs are automatically redacted."
+    )]
+    async fn get_hardware_health(&self) -> String {
+        let res = tokio::task::spawn_blocking(crate::health::get_hardware_health).await;
+        match res {
+            Ok(r) => serde_json::to_string_pretty(&r).unwrap_or_else(|e| format!("Error: {e}")),
+            Err(e) => format!("{{\"error\":true,\"message\":\"get_hardware_health failed: {e}\"}}"),
+        }
+    }
+
+    /// Large & forgotten files finder grouped into semantic kinds.
+    #[tool(
+        name = "find_large_forgotten",
+        description = "Find large & forgotten files (default >= 100 MiB) grouped into semantic kinds (video, archive, installer, ml_model, disk_image, audio, image, document, other) with unusedDays and accessTimeReliable detection. Skips Cloud-Only placeholders (OneDrive/iCloud), dev build trees (.git/node_modules/.venv/target), and Never-Touch paths. Returns scanId + review approvalTokens for delete()."
+    )]
+    async fn find_large_forgotten(
+        &self,
+        Parameters(params): Parameters<crate::large_files::LargeFilesParams>,
+    ) -> String {
+        let engine = self.engine.clone();
+        let res = tokio::task::spawn_blocking(move || {
+            crate::large_files::find_large_forgotten(&engine, &params)
+        })
+        .await;
+        match res {
+            Ok(r) => serde_json::to_string_pretty(&r).unwrap_or_else(|e| format!("Error: {e}")),
+            Err(e) => {
+                format!("{{\"error\":true,\"message\":\"find_large_forgotten failed: {e}\"}}")
+            }
+        }
+    }
 }
 
 #[tool_handler]
 impl ServerHandler for DiskCleanerServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(rmcp::model::Implementation::new(
                 "disk-cleaner-mcp",
                 VERSION,
             ))
             .with_instructions(
-                "Disk Cleaner MCP Server. Scan, analyze, and safely delete junk files.\n\
-                 Workflow: get_system_status → scan → get_tree/file_types/find_duplicates/analyze → (review) → delete\n\
-                 Insights: get_tree shows which folders hold the space; file_types shows which file types;\n\
-                 find_duplicates reports byte-identical copies with deletion tokens; compare_scans diffs two scans.\n\
-                 Safety: System files are protected. Default delete = trash (recoverable).",
+                "Disk Cleaner MCP Server v0.6.0 (20 pure-MCP tools for AI Agents, zero GUI/telemetry).\n\
+                 Fast Agent Workflow: get_hardware_health / get_system_status → smart_scan(targetFreeBytes) → delete(dryRun=true) → delete(dryRun=false, trash).\n\
+                 Specialized Audits: scan_browsers, scan_app_leftovers, scan_startup_items, find_large_forgotten, find_duplicates (SIMD BLAKE3).\n\
+                 Safety: Never-Touch Guard blocks credentials/cookies/passwords/keys; live processes are locked; default delete = Recycle Bin / Trash.",
             )
     }
 }
@@ -557,7 +678,7 @@ pub struct CompareParams {
 fn scan_not_found(id: &str) -> String {
     let err = serde_json::json!({
         "error": true,
-        "message": format!("Scan '{}' not found. Run scan first (only the 3 most recent scans stay cached).", id),
+        "message": format!("Scan '{}' not found. Run scan first (only the 8 most recent scans stay cached).", id),
     });
     serde_json::to_string_pretty(&err).unwrap_or_else(|_| "Error".into())
 }

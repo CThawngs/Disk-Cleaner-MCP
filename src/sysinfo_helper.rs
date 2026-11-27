@@ -97,30 +97,87 @@ pub fn get_system_status() -> SystemStatus {
     }
 }
 
-/// Recursive size of a trash bin; 0 when inaccessible (permissions, missing).
+/// Bounded iterative size of a trash bin; 0 when inaccessible (permissions, missing).
+/// Never follows symlinks/reparse points and caps entry budget so huge trashed
+/// trees (`node_modules`, `target`) cannot stall `get_system_status`.
+#[cfg(not(windows))]
 fn dir_size(root: &std::path::Path) -> u64 {
+    const MAX_TRASH_WALK_ENTRIES: usize = 50_000;
     let mut total = 0u64;
+    let mut seen = 0usize;
     let mut stack = vec![root.to_path_buf()];
     while let Some(p) = stack.pop() {
         let Ok(rd) = std::fs::read_dir(&p) else {
             continue;
         };
         for e in rd.flatten() {
-            let path = e.path();
-            if path.is_dir() && !path.is_symlink() {
-                total += dir_size(&path);
+            seen += 1;
+            if seen > MAX_TRASH_WALK_ENTRIES {
+                return total;
+            }
+            let Ok(ft) = e.file_type() else {
+                continue;
+            };
+            if ft.is_symlink() {
+                continue;
+            }
+            if ft.is_dir() {
+                stack.push(e.path());
             } else if let Ok(m) = e.metadata() {
-                total += m.len();
+                total = total.saturating_add(m.len());
             }
         }
     }
     total
 }
 
+#[cfg(windows)]
+fn windows_recycle_bin_size(mount: &str) -> u64 {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    #[cfg_attr(target_arch = "x86", repr(C, packed))]
+    #[cfg_attr(not(target_arch = "x86"), repr(C))]
+    struct ShQueryRbInfo {
+        cb_size: u32,
+        i64_size: i64,
+        i64_num_items: i64,
+    }
+
+    #[link(name = "shell32")]
+    extern "system" {
+        fn SHQueryRecycleBinW(
+            psz_root_path: *const u16,
+            p_sh_query_rb_info: *mut ShQueryRbInfo,
+        ) -> i32;
+    }
+
+    if mount.is_empty() {
+        return 0;
+    }
+    let wide: Vec<u16> = OsStr::new(mount)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut info = ShQueryRbInfo {
+        cb_size: std::mem::size_of::<ShQueryRbInfo>() as u32,
+        i64_size: 0,
+        i64_num_items: 0,
+    };
+    // SAFETY: `wide` is a valid NUL-terminated UTF-16 root path and `info` has `cb_size` initialized
+    // to the exact ABI layout expected by `SHQueryRecycleBinW` (`shellapi.h`).
+    let hr = unsafe { SHQueryRecycleBinW(wide.as_ptr(), &mut info) };
+    if hr == 0 && info.i64_size > 0 {
+        info.i64_size as u64
+    } else {
+        0
+    }
+}
+
 fn trash_size_for(mount: &str) -> u64 {
     #[cfg(windows)]
     {
-        dir_size(&std::path::Path::new(mount).join("$Recycle.Bin"))
+        windows_recycle_bin_size(mount)
     }
     #[cfg(target_os = "linux")]
     {
@@ -147,5 +204,23 @@ fn trash_size_for(mount: &str) -> u64 {
     {
         let _ = mount;
         0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn system_status_completes_quickly_and_handles_empty_mount() {
+        assert_eq!(trash_size_for(""), 0);
+        let t0 = std::time::Instant::now();
+        let st = get_system_status();
+        assert!(!st.platform.is_empty());
+        assert!(
+            t0.elapsed().as_secs() < 10,
+            "get_system_status took {:?}",
+            t0.elapsed()
+        );
     }
 }

@@ -39,6 +39,9 @@ jobs:
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
         with:
           key: ${{ matrix.target }}
+      - name: Install trash deps (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libglib2.0-bin gvfs-bin || sudo apt-get install -y libglib2.0-bin
       - name: Build release
         run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Smoke on release artifact
@@ -47,14 +50,81 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then BIN=target/${{ matrix.target }}/release/disk-cleaner-mcp.exe; else BIN=target/${{ matrix.target }}/release/disk-cleaner-mcp; fi
           (python3 smoke_test.py "$BIN" || python smoke_test.py "$BIN")
       - name: SBOM (cargo-cyclonedx)
+        shell: bash
         run: |
           cargo install cargo-cyclonedx --locked --quiet
-          cargo cyclonedx --format json --override-filename sbom-${{ matrix.target }}
-      - name: RPM (Linux x86_64 native only; cargo-rpm cannot cross-compile)
+          cargo cyclonedx --format json --override-filename "sbom-${{ matrix.target }}"
+          mkdir -p target/cyclonedx
+          if [ -f "sbom-${{ matrix.target }}.json" ]; then
+            mv -f "sbom-${{ matrix.target }}.json" "target/cyclonedx/sbom-${{ matrix.target }}.json"
+          elif [ -f "sbom-${{ matrix.target }}.cdx.json" ]; then
+            mv -f "sbom-${{ matrix.target }}.cdx.json" "target/cyclonedx/sbom-${{ matrix.target }}.json"
+          else
+            echo "ERROR: CycloneDX SBOM not found in workspace root" >&2
+            ls -la
+            exit 1
+          fi
+          test -s "target/cyclonedx/sbom-${{ matrix.target }}.json"
+          ls -lh "target/cyclonedx/sbom-${{ matrix.target }}.json"
+      - name: RPM (Linux x86_64 native only)
         if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
         run: |
-          cargo install cargo-rpm --locked --quiet
-          cargo rpm
+          sudo apt-get update && sudo apt-get install -y rpm
+          mkdir -p target/release target/release/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          cp -f target/x86_64-unknown-linux-gnu/release/disk-cleaner-mcp target/release/disk-cleaner-mcp
+          python3 - <<'PY'
+          import pathlib, tomllib
+
+          root = pathlib.Path.cwd()
+          data = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
+          pkg = data["package"]
+          assets = pkg["metadata"]["rpm"]["assets"]
+
+          install_lines = []
+          files_lines = []
+          for asset in assets:
+              src = (root / asset["source"]).resolve()
+              if not src.is_file():
+                  raise SystemExit(f"Missing RPM asset source: {src}")
+              dest = asset["dest"]
+              mode = asset.get("mode", "0644")
+              install_lines.append(f'install -Dm{mode} "{src}" "%{{buildroot}}{dest}"')
+              file_entry = f"{dest}*" if "/man/" in dest else dest
+              files_lines.append(f"%attr({mode}, root, root) {file_entry}")
+
+          spec = "\n".join([
+              "%global debug_package %{nil}",
+              "%define _build_id_links none",
+              f"Name:           {pkg['name']}",
+              f"Version:        {pkg['version']}",
+              "Release:        1",
+              f"Summary:        {pkg['description']}",
+              f"License:        {pkg['license']}",
+              f"URL:            {pkg['repository']}",
+              "BuildArch:      x86_64",
+              "AutoReqProv:    no",
+              "",
+              "%description",
+              pkg["description"],
+              "",
+              "%install",
+              *install_lines,
+              "",
+              "%files",
+              *files_lines,
+              "",
+          ])
+          spec_path = root / "target/release/rpmbuild/SPECS" / f"{pkg['name']}.spec"
+          spec_path.write_text(spec, encoding="utf-8")
+          print(f"Generated RPM spec: {spec_path}")
+          PY
+          rpmbuild --nodeps --define "_topdir $(pwd)/target/release/rpmbuild" -bb target/release/rpmbuild/SPECS/disk-cleaner-mcp.spec
+          shopt -s nullglob
+          rpms=(target/release/rpmbuild/RPMS/x86_64/*.rpm)
+          test ${#rpms[@]} -ge 1
+          ls -lh "${rpms[@]}"
+          rpm -qpl "${rpms[0]}"
       - name: Ad-hoc sign macOS binary (Gatekeeper-friendly, no cert needed)
         if: runner.os == 'macOS'
         run: codesign --force --sign - target/${{ matrix.target }}/release/disk-cleaner-mcp && codesign --verify target/${{ matrix.target }}/release/disk-cleaner-mcp
@@ -70,7 +140,7 @@ jobs:
           path: |
             target/${{ matrix.target }}/release/disk-cleaner-mcp-${{ matrix.target }}${{ matrix.ext }}
             target/cyclonedx/sbom-${{ matrix.target }}.json
-            target/release/*.rpm
+            target/release/rpmbuild/RPMS/x86_64/*.rpm
 
   publish:
     needs: release
@@ -88,16 +158,21 @@ jobs:
       - name: Flatten artifacts (upload preserves target/ tree)
         shell: bash
         run: |
-          find artifacts -type f -name "disk-cleaner-mcp-*" -exec cp -f {} artifacts/ \;
-          find artifacts -type f -name "sbom-*.json" -exec cp -f {} artifacts/ \;
-          find artifacts -type f -name "*.rpm" -exec cp -f {} artifacts/ \;
-          find artifacts -type f | sort
+          find artifacts -mindepth 2 -type f -name "disk-cleaner-mcp-*" -exec mv -f {} artifacts/ \;
+          find artifacts -mindepth 2 -type f -name "sbom-*.json" -exec mv -f {} artifacts/ \;
+          find artifacts -mindepth 2 -type f -name "*.rpm" -exec mv -f {} artifacts/ \;
+          find artifacts -mindepth 1 -type d -empty -delete
+          find artifacts -maxdepth 1 -type f | sort
       - name: Show artifacts
         run: ls -la artifacts/
       - name: Generate SHA256 checksums
+        shell: bash
         run: |
           cd artifacts
-          { sha256sum disk-cleaner-mcp-* install.sh install.ps1 2>/dev/null; sha256sum sbom-*.json *.rpm 2>/dev/null; } > checksums.txt
+          shopt -s nullglob
+          files=(disk-cleaner-mcp-* install.sh install.ps1 sbom-*.json *.rpm)
+          test ${#files[@]} -ge 1
+          sha256sum "${files[@]}" > checksums.txt
           cat checksums.txt
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
