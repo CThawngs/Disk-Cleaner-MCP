@@ -2,11 +2,13 @@
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File install.ps1
 #   powershell -ExecutionPolicy Bypass -File install.ps1 -LocalBinary target\release\disk-cleaner-mcp.exe
-# Installs the MCP server binary and additively registers it into detected MCP clients.
+#   powershell -ExecutionPolicy Bypass -File install.ps1 -LocalBinary target\release\disk-cleaner-mcp.exe -SkipClientConfig
+# Installs the MCP server binary (with atomic hot-swap if running) and additively registers it into detected MCP clients.
 
 param(
     [string]$Version = "latest",
     [switch]$SkipBinary,
+    [switch]$SkipClientConfig,
     [string]$LocalBinary = "",
     [string]$InstallDir = "$env:LOCALAPPDATA\disk-cleaner-mcp"
 )
@@ -15,10 +17,57 @@ $ErrorActionPreference = 'Stop'
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $exe = Join-Path $InstallDir "disk-cleaner-mcp.exe"
 
+function Remove-StaleBackupBinaries {
+    param(
+        [Parameter(Mandatory = $true)][string]$Directory
+    )
+
+    if (-not (Test-Path -LiteralPath $Directory -PathType Container)) {
+        return
+    }
+
+    Get-ChildItem -LiteralPath $Directory -Filter "disk-cleaner-mcp.old*.exe" -File -ErrorAction SilentlyContinue | ForEach-Object {
+        Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Install-BinaryAtomically {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceFile,
+        [Parameter(Mandatory = $true)][string]$TargetExe
+    )
+
+    $targetDir = Split-Path -Path $TargetExe -Parent
+    $oldExe = Join-Path $targetDir "disk-cleaner-mcp.old.exe"
+
+    # Best-effort cleanup of stale .old.exe before direct copy
+    Remove-Item -LiteralPath $oldExe -Force -ErrorAction SilentlyContinue
+
+    try {
+        Copy-Item -LiteralPath $SourceFile -Destination $TargetExe -Force -ErrorAction Stop
+    } catch {
+        if (Test-Path -LiteralPath $TargetExe -PathType Leaf) {
+            # Running MCP binary is locked against overwrite, but Windows allows renaming it on the same volume.
+            $backupTarget = $oldExe
+            try {
+                Move-Item -LiteralPath $TargetExe -Destination $backupTarget -Force -ErrorAction Stop
+            } catch {
+                $backupTarget = Join-Path $targetDir "disk-cleaner-mcp.old.$PID.exe"
+                Move-Item -LiteralPath $TargetExe -Destination $backupTarget -Force -ErrorAction Stop
+            }
+            Copy-Item -LiteralPath $SourceFile -Destination $TargetExe -Force -ErrorAction Stop
+            Write-Host "Running binary was locked; hot-swapped via $backupTarget (will auto-clean on next run)." -ForegroundColor Yellow
+        } else {
+            throw
+        }
+    }
+}
+
 Write-Host "=== disk-cleaner-mcp installer (Windows) ===" -ForegroundColor Cyan
 
-# 1. Create install dir
+# 1. Create install dir & best-effort clean stale .old.exe backups
 New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+Remove-StaleBackupBinaries -Directory $InstallDir
 
 # 2. Install binary: -LocalBinary takes precedence over GitHub Release download
 if (-not [string]::IsNullOrWhiteSpace($LocalBinary)) {
@@ -28,8 +77,8 @@ if (-not [string]::IsNullOrWhiteSpace($LocalBinary)) {
     $srcFull = [System.IO.Path]::GetFullPath($LocalBinary)
     $dstFull = [System.IO.Path]::GetFullPath($exe)
     if ($srcFull -ne $dstFull) {
-        Copy-Item -LiteralPath $LocalBinary -Destination $exe -Force
-        Write-Host "Copied local binary from $LocalBinary to $exe" -ForegroundColor Green
+        Install-BinaryAtomically -SourceFile $LocalBinary -TargetExe $exe
+        Write-Host "Installed local binary from $LocalBinary to $exe" -ForegroundColor Green
     } else {
         Write-Host "Using existing local binary at $exe" -ForegroundColor Green
     }
@@ -44,7 +93,7 @@ if (-not [string]::IsNullOrWhiteSpace($LocalBinary)) {
         $sumUrl = "https://github.com/CThawngs/Disk-Cleaner-MCP/releases/download/$Version/checksums.txt"
     }
     Write-Host "Downloading $url ..."
-    $tmp = "$exe.tmp"
+    $tmp = "$exe.tmp.$PID"
     $sumFile = Join-Path $env:TEMP "checksums-disk-cleaner-$PID.txt"
     try {
         Invoke-WebRequest -Uri $url -OutFile $tmp
@@ -56,7 +105,7 @@ if (-not [string]::IsNullOrWhiteSpace($LocalBinary)) {
         $actual = (Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash.ToLower()
         if ($expected.ToLower() -ne $actual) { throw "checksum mismatch (expected $expected, got $actual)" }
         Write-Host "Checksum OK: $actual" -ForegroundColor Green
-        Move-Item -Force -LiteralPath $tmp -Destination $exe
+        Install-BinaryAtomically -SourceFile $tmp -TargetExe $exe
     } finally {
         Remove-Item -LiteralPath $sumFile -ErrorAction SilentlyContinue
         if (Test-Path -LiteralPath $tmp) {
@@ -178,74 +227,81 @@ function Register-CodexToml {
 }
 
 # 4. Additive MCP client registrations (never overwrite existing keys)
-$standardEntry = [PSCustomObject]@{
-    command = $exe
-    args    = @()
-    env     = [PSCustomObject]@{}
-}
-
-$openCodeEntry = [PSCustomObject]@{
-    type    = "local"
-    command = [string[]]@($exe)
-    enabled = $true
-}
-
-$jsonClients = @(
-    @{
-        Name      = "Claude Desktop"
-        Path      = Join-Path $env:APPDATA "Claude\claude_desktop_config.json"
-        RootKey   = "mcpServers"
-        Entry     = $standardEntry
-        DetectDir = ""
-    },
-    @{
-        Name      = "Claude Code"
-        Path      = Join-Path $env:USERPROFILE ".claude.json"
-        RootKey   = "mcpServers"
-        Entry     = $standardEntry
-        DetectDir = Join-Path $env:USERPROFILE ".claude"
-    },
-    @{
-        Name      = "Cursor"
-        Path      = Join-Path $env:USERPROFILE ".cursor\mcp.json"
-        RootKey   = "mcpServers"
-        Entry     = $standardEntry
-        DetectDir = ""
-    },
-    @{
-        Name      = "Gemini CLI"
-        Path      = Join-Path $env:USERPROFILE ".gemini\settings.json"
-        RootKey   = "mcpServers"
-        Entry     = $standardEntry
-        DetectDir = ""
-    },
-    @{
-        Name      = "Antigravity"
-        Path      = Join-Path $env:USERPROFILE ".gemini\antigravity\mcp_config.json"
-        RootKey   = "mcpServers"
-        Entry     = $standardEntry
-        DetectDir = ""
-    },
-    @{
-        Name      = "OpenCode"
-        Path      = Join-Path $env:USERPROFILE ".config\opencode\opencode.json"
-        RootKey   = "mcp"
-        Entry     = $openCodeEntry
-        DetectDir = ""
+if ($SkipClientConfig) {
+    Write-Host "Skipping MCP client configuration (-SkipClientConfig)." -ForegroundColor DarkGray
+} else {
+    $standardEntry = [PSCustomObject]@{
+        command = $exe
+        args    = @()
+        env     = [PSCustomObject]@{}
     }
-)
 
-foreach ($client in $jsonClients) {
-    Register-JsonMcpClient `
-        -Name $client.Name `
-        -Path $client.Path `
-        -RootKey $client.RootKey `
-        -ServerEntry $client.Entry `
-        -DetectDir $client.DetectDir
+    $openCodeEntry = [PSCustomObject]@{
+        type    = "local"
+        command = [string[]]@($exe)
+        enabled = $true
+    }
+
+    $jsonClients = @(
+        @{
+            Name      = "Claude Desktop"
+            Path      = Join-Path $env:APPDATA "Claude\claude_desktop_config.json"
+            RootKey   = "mcpServers"
+            Entry     = $standardEntry
+            DetectDir = ""
+        },
+        @{
+            Name      = "Claude Code"
+            Path      = Join-Path $env:USERPROFILE ".claude.json"
+            RootKey   = "mcpServers"
+            Entry     = $standardEntry
+            DetectDir = Join-Path $env:USERPROFILE ".claude"
+        },
+        @{
+            Name      = "Cursor"
+            Path      = Join-Path $env:USERPROFILE ".cursor\mcp.json"
+            RootKey   = "mcpServers"
+            Entry     = $standardEntry
+            DetectDir = ""
+        },
+        @{
+            Name      = "Gemini CLI"
+            Path      = Join-Path $env:USERPROFILE ".gemini\settings.json"
+            RootKey   = "mcpServers"
+            Entry     = $standardEntry
+            DetectDir = ""
+        },
+        @{
+            Name      = "Antigravity"
+            Path      = Join-Path $env:USERPROFILE ".gemini\antigravity\mcp_config.json"
+            RootKey   = "mcpServers"
+            Entry     = $standardEntry
+            DetectDir = ""
+        },
+        @{
+            Name      = "OpenCode"
+            Path      = Join-Path $env:USERPROFILE ".config\opencode\opencode.json"
+            RootKey   = "mcp"
+            Entry     = $openCodeEntry
+            DetectDir = ""
+        }
+    )
+
+    foreach ($client in $jsonClients) {
+        Register-JsonMcpClient `
+            -Name $client.Name `
+            -Path $client.Path `
+            -RootKey $client.RootKey `
+            -ServerEntry $client.Entry `
+            -DetectDir $client.DetectDir
+    }
+
+    Register-CodexToml -Path (Join-Path $env:USERPROFILE ".codex\config.toml") -BinaryPath $exe
 }
 
-Register-CodexToml -Path (Join-Path $env:USERPROFILE ".codex\config.toml") -BinaryPath $exe
+# 5. Best-effort cleanup of stale .old.exe backups at script end
+Remove-StaleBackupBinaries -Directory $InstallDir
 
 Write-Host ""
 Write-Host "Installed at: $exe" -ForegroundColor Green
-Write-Host "Test: $exe (expect MCP server to start, then you can use get_system_status / scan / analyze / delete)"
+Write-Host "Test: $exe (expect MCP server to start, then you can use get_system_status / smart_scan / scan / analyze / delete)"
