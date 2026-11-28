@@ -103,7 +103,9 @@ pub struct ActiveAiProcesses {
 
 impl ActiveAiProcesses {
     pub fn detect_live() -> Self {
-        let mut sys = System::new();
+        let Ok(mut sys) = System::new() else {
+            return Self::default();
+        };
         sys.refresh_processes_specifics(
             ProcessesToUpdate::All,
             true,

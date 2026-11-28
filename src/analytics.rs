@@ -103,6 +103,21 @@ pub fn all_categories() -> Vec<CategoryInfo> {
             description: "Large files unused for an extended period grouped by semantic kind".into(),
         },
         CategoryInfo {
+            key: "project_artifact".into(),
+            label: "Dormant Project Build & Env Artifacts".into(),
+            description: "Regenerable target/, node_modules/, .venv/, .next/, .turbo/, and build caches in inactive projects".into(),
+        },
+        CategoryInfo {
+            key: "container_cache".into(),
+            label: "WSL2 / Container Cache & Virtual Disks".into(),
+            description: "Disposable Docker/Podman logs & caches plus read-only WSL2/Docker virtual disk bloat audits".into(),
+        },
+        CategoryInfo {
+            key: "model_duplicate".into(),
+            label: "Duplicate AI Model Weights & Conda Cache".into(),
+            description: "Cross-tool duplicate LLM/CV weights (.gguf, .safetensors, .pt, .onnx, Ollama blobs) and Conda package tarballs".into(),
+        },
+        CategoryInfo {
             key: "other".into(),
             label: "Other".into(),
             description: "Uncategorized files".into(),

@@ -133,8 +133,12 @@ pub fn get_hardware_health() -> HardwareHealthReport {
         .unwrap_or("unknown");
     let (battery, disks, disks_unavailable_reason) = collect_os_hardware();
     let mut volumes = Vec::new();
-    let list = Disks::new_with_refreshed_list();
-    for d in list.list().iter().filter(|d| d.total_space() > 0) {
+    let list = Disks::new_with_refreshed_list().ok();
+    for d in list
+        .iter()
+        .flat_map(|l| l.iter())
+        .filter(|d| d.total_space() > 0)
+    {
         let (tot, avail) = (d.total_space(), d.available_space());
         volumes.push(VolumeSpaceHealth {
             mount_point: d.mount_point().to_string_lossy().into_owned(),

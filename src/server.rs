@@ -493,6 +493,74 @@ impl DiskCleanerServer {
             }
         }
     }
+
+    /// Dormant developer project build/env scanner with ecosystem manifest proof & git ls-files guard.
+    #[tool(
+        name = "scan_project_artifacts",
+        description = "Scan developer workspace roots for dormant build caches & heavy envs (target, node_modules, .next, .nuxt, .turbo, .parcel-cache, .svelte-kit, .venv/venv, .pytest_cache, .mypy_cache, .ruff_cache, __pycache__, .gradle, CMake/Gradle build) inactive >= minInactiveDays (default 14). Enforces ecosystem manifest proof, live compiler/IDE lock detection, and a git ls-files guard that marks git-tracked directories keep/dangerous. Returns scanId + approvalTokens."
+    )]
+    async fn scan_project_artifacts(
+        &self,
+        Parameters(params): Parameters<crate::project_artifacts::ProjectArtifactsParams>,
+    ) -> String {
+        let engine = self.engine.clone();
+        let res = tokio::task::spawn_blocking(move || {
+            crate::project_artifacts::scan_project_artifacts(&engine, &params)
+        })
+        .await;
+        match res {
+            Ok(r) => serde_json::to_string_pretty(&r).unwrap_or_else(|e| format!("Error: {e}")),
+            Err(e) => {
+                format!("{{\"error\":true,\"message\":\"scan_project_artifacts failed: {e}\"}}")
+            }
+        }
+    }
+
+    /// WSL2 & container virtual disk bloat auditor + compaction runbook + disposable container log session.
+    #[tool(
+        name = "scan_container_virtual_disks",
+        description = "Audit WSL2, Docker Desktop, OrbStack, Rancher, Colima, Lima & Podman virtual disks (.vhdx, Docker.raw, .qcow2, diffdisk) comparing physical allocated bytes vs apparent/virtual bytes, plus a non-blocking 3s-timeout `docker system df` summary. Virtual disks are strictly read-only (`blocked`, deletableViaMcp=false) with OS-specific compaction runbooks (`wsl --shutdown`, `Optimize-VHD`, `diskpart`); unlocked old container host logs are registered in ScanSession (`safe_to_delete`)."
+    )]
+    async fn scan_container_virtual_disks(
+        &self,
+        Parameters(params): Parameters<crate::containers::ContainerScanParams>,
+    ) -> String {
+        let engine = self.engine.clone();
+        let res = tokio::task::spawn_blocking(move || {
+            crate::containers::scan_container_virtual_disks(&engine, &params)
+        })
+        .await;
+        match res {
+            Ok(r) => serde_json::to_string_pretty(&r).unwrap_or_else(|e| format!("Error: {e}")),
+            Err(e) => {
+                format!(
+                    "{{\"error\":true,\"message\":\"scan_container_virtual_disks failed: {e}\"}}"
+                )
+            }
+        }
+    }
+
+    /// Hardlink-aware 3-stage SIMD BLAKE3 AI/LLM/CV model weight deduplicator + Conda tarball cleaner.
+    #[tool(
+        name = "scan_model_duplicates",
+        description = "Deduplicate local AI/LLM/CV model weights (>= 16 MiB default: .gguf, .safetensors, .pt, .pth, .ckpt, .onnx, .bin, .ggml, .tflite, and Ollama blobs/sha256-*) across Ollama, HuggingFace, LM Studio, Whisper, PyTorch, ComfyUI & SD-WebUI using physical file-index/inode hardlink detection + 3-stage SIMD BLAKE3 hashing, plus Conda pkgs/*.conda & *.tar.bz2 tarball cleanup. Existing OS hardlinks report wastedBytes=0 and are never flagged; redundant copies return review approvalTokens + SSD TBW hardlink commands."
+    )]
+    async fn scan_model_duplicates(
+        &self,
+        Parameters(params): Parameters<crate::model_dedup::ModelDedupParams>,
+    ) -> String {
+        let engine = self.engine.clone();
+        let res = tokio::task::spawn_blocking(move || {
+            crate::model_dedup::scan_model_duplicates(&engine, &params)
+        })
+        .await;
+        match res {
+            Ok(r) => serde_json::to_string_pretty(&r).unwrap_or_else(|e| format!("Error: {e}")),
+            Err(e) => {
+                format!("{{\"error\":true,\"message\":\"scan_model_duplicates failed: {e}\"}}")
+            }
+        }
+    }
 }
 
 #[tool_handler]
@@ -504,9 +572,9 @@ impl ServerHandler for DiskCleanerServer {
                 VERSION,
             ))
             .with_instructions(
-                "Disk Cleaner MCP Server v0.6.0 (20 pure-MCP tools for AI Agents, zero GUI/telemetry).\n\
+                "Disk Cleaner MCP Server v0.7.0 (23 pure-MCP tools for AI Agents, zero GUI/telemetry).\n\
                  Fast Agent Workflow: get_hardware_health / get_system_status → smart_scan(targetFreeBytes) → delete(dryRun=true) → delete(dryRun=false, trash).\n\
-                 Specialized Audits: scan_browsers, scan_app_leftovers, scan_startup_items, find_large_forgotten, find_duplicates (SIMD BLAKE3).\n\
+                 Specialized Audits: scan_project_artifacts, scan_container_virtual_disks, scan_model_duplicates, scan_browsers, scan_app_leftovers, scan_startup_items, find_large_forgotten, find_duplicates (SIMD BLAKE3).\n\
                  Safety: Never-Touch Guard blocks credentials/cookies/passwords/keys; live processes are locked; default delete = Recycle Bin / Trash.",
             )
     }

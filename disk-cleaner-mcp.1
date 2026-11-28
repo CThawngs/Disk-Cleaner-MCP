@@ -1,17 +1,106 @@
-.TH DISK-CLEANER-MCP 1 "November 2026" "Disk Cleaner MCP 0.3.0"
+.TH DISK-CLEANER-MCP 1 "2026-04" "0.7.0" "User Commands"
 .SH NAME
-disk-cleaner-mcp \- Rust MCP server: fast safe disk cleanup for AI agents
+disk-cleaner-mcp \- Rust MCP server: fast, safe cross-platform disk cleanup for AI agents
 .SH SYNOPSIS
-disk-cleaner-mcp [--http [PORT]]
+.B disk-cleaner-mcp
+[\fB\-\-http\fR [\fIPORT\fR]]
 .SH DESCRIPTION
-Serves MCP protocol over stdio (default). With --http (optional feature), serves Streamable HTTP on loopback (default port 8000) at /mcp.
+Serves the Model Context Protocol (MCP) over stdio by default with 23 pure-MCP
+tools for safe disk discovery, browser/app/developer/container/AI-model hygiene,
+and Recycle Bin/Trash cleanup. When built with the optional \fBhttp\fR feature
+and invoked with \fB\-\-http\fR, serves Streamable HTTP on loopback only
+(\fB127.0.0.1\fR, default port \fB8000\fR) at \fB/mcp\fR.
 .SH OPTIONS
 .TP
---http [PORT]
-Enable HTTP transport on 127.0.0.1. Default port 8000.
-.SH ENTIRONMENT
+.B \-\-http \fR[\fIPORT\fR]
+Enable Streamable HTTP transport on \fB127.0.0.1\fR (requires \fBhttp\fR feature). Default port is \fB8000\fR.
+.SH ENVIRONMENT
 .TP
-DISK_CLEANER_TELEMETRY
-Set to 1 to enable opt-in local metrics reporting. No network calls.
+.B DCM_TELEMETRY
+When set (any value), enables opt-in local aggregated disk metrics returned by
+\fBget_metrics\fR. When unset, \fBget_metrics\fR returns zeroed (redacted) metrics.
+No network calls are ever made.
+.TP
+.B RUST_LOG
+Controls stderr tracing verbosity via \fBEnvFilter\fR (default: \fBdisk_cleaner_mcp=info\fR).
+Logs are always written to stderr so stdout remains clean for MCP frames.
+.SH MCP TOOLS
+All 23 MCP tools exposed by \fBdisk-cleaner-mcp\fR v0.7.0:
+.SS "Discovery, Analytics & Core Cleanup (14 tools)"
+.TP
+.B get_system_status
+Read-only OS, disk capacity, and server status overview.
+.TP
+.B get_metrics
+Read-only aggregated disk telemetry across mounted volumes (zeroed unless \fBDCM_TELEMETRY\fR is set).
+.TP
+.B list_categories
+List supported cleanup categories and their safety classification.
+.TP
+.B scan
+Fast parallel filesystem scan returning categorized entries, \fBscanId\fR, and per-item \fBapprovalToken\fR values.
+.TP
+.B analyze
+Inspect, filter, and summarize entries from an existing scan session.
+.TP
+.B delete
+Execute safe deletion (\fBdryRun=true\fR and OS Recycle Bin/Trash by default; permanent delete requires \fBpermanent=true\fR, \fBconfirmPermanent=true\fR, and valid \fBapprovalToken\fR values).
+.TP
+.B organize
+Preview or apply safe rule-based file organization (\fBdryRun=true\fR by default).
+.TP
+.B get_report
+Generate a structured summary report for a scan session.
+.TP
+.B get_tree
+Render a hierarchical disk-usage tree for a scan session.
+.TP
+.B file_types
+Summarize disk usage grouped by file extension and type.
+.TP
+.B find_duplicates
+Content-verified SIMD BLAKE3 duplicate file detection within a scan scope.
+.TP
+.B compare_scans
+Compare two scan sessions (\fBscanIdA\fR vs \fBscanIdB\fR) to track storage growth or reclamation.
+.TP
+.B list_trash
+Read-only listing of items currently in the OS Recycle Bin / Trash.
+.TP
+.B empty_trash
+Permanently purge the OS Recycle Bin / Trash (irreversible; requires \fBconfirm=true\fR).
+.SS "Deep OS, App, Browser, Startup, Health & Large Files (v0.6, 6 tools)"
+.TP
+.B smart_scan
+Zero-config allowlist scan across OS caches, package managers, and AI-stack caches with live-process protection.
+.TP
+.B scan_browsers
+Cross-platform browser storage audit (10 Chromium browsers + Firefox) separating disposable caches, on-device AI models, and website storage while strictly protecting passwords, cookies, history, and bookmarks.
+.TP
+.B scan_app_leftovers
+Detect orphaned caches and logs from uninstalled applications while protecting user data profiles.
+.TP
+.B scan_startup_items
+Audit OS startup and login entries with CLI secret redaction and orphaned entry detection.
+.TP
+.B get_hardware_health
+Read-only battery and SSD SMART health audit with deterministic Agent I/O guardrails and hardware serial/UUID redaction.
+.TP
+.B find_large_forgotten
+Find large, unused files grouped by semantic kind while skipping cloud-only placeholders and active dev trees.
+.SS "SSD Savior: Developer, Container & AI-Model Hygiene (v0.7, 3 tools)"
+.TP
+.B scan_project_artifacts
+Ecosystem-proven discovery of stale build caches and dependency directories (\fBtarget\fR, \fBnode_modules\fR, \fB.next\fR, \fB.venv\fR, \fB.gradle\fR, CMake \fBbuild\fR) guarded against git-tracked files and active IDE/compiler processes.
+.TP
+.B scan_container_virtual_disks
+Read-only audit of Docker, WSL2, Podman, OrbStack, Colima, and Lima virtual disks (\fB.vhdx\fR, \fBDocker.raw\fR, \fB.qcow2\fR, \fBdiffdisk\fR) with physical vs. apparent sizing, non-blocking \fBdocker system df\fR probing, and OS-specific compaction runbooks (virtual disks are never deletable via MCP), plus safe cleanup of stale host container logs.
+.TP
+.B scan_model_duplicates
+Hardlink-aware 3-stage BLAKE3 deduplication for AI/LLM weights (\fB.gguf\fR, \fB.safetensors\fR, \fB.pt\fR, \fB.pth\fR, \fB.ckpt\fR, \fB.onnx\fR, \fB.bin\fR, \fB.ggml\fR, \fB.tflite\fR, and Ollama \fBblobs/sha256-*\fR) plus safe Conda compressed package tarball cleanup (\fB*.conda\fR, \fB*.tar.bz2\fR).
 .SH SAFETY
-Deletes go to Trash by default. Permanent delete requires permanent + confirmPermanent. All deletes require approvalToken per scan.
+Deletes go to the OS Recycle Bin / Trash by default and default to \fBdryRun=true\fR.
+Permanent delete requires \fBpermanent=true\fR and \fBconfirmPermanent=true\fR.
+All destructive actions require a valid per-scan \fBapprovalToken\fR.
+System-protected paths, browser credentials, cloud-only placeholders, git-tracked
+artifacts, and container virtual disks are strictly guarded against MCP deletion.

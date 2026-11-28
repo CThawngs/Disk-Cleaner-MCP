@@ -74,7 +74,7 @@ def main():
     })
     check_ok(resp, "initialize")
     init_info = resp["result"].get("serverInfo", {})
-    assert init_info.get("version") == "0.6.0", f"expected server version 0.6.0, got {init_info}"
+    assert init_info.get("version") == "0.7.0", f"expected server version 0.7.0, got {init_info}"
 
     # 2. tools/list
     resp = srv.request("tools/list", {})
@@ -89,9 +89,12 @@ def main():
         "delete", "get_report", "empty_trash", "list_trash",
         "smart_scan", "scan_browsers", "scan_app_leftovers",
         "scan_startup_items", "get_hardware_health", "find_large_forgotten",
+        "scan_project_artifacts", "scan_container_virtual_disks", "scan_model_duplicates",
     }
     assert set(names) == EXPECTED_TOOLS, f"tool mismatch: missing={EXPECTED_TOOLS - set(names)} extra={set(names) - EXPECTED_TOOLS}"
-    print(f"  ✓ verified all {len(names)} MCP tools (v0.6.0)")
+    print(f"  ✓ verified all {len(names)} MCP tools (v0.7.0)")
+    cats = call_tool(srv, "list_categories", {}, "list_categories (23 categories)")
+    assert len(cats) == 23, f"expected 23 categories in v0.7.0, got {len(cats)}: {cats}"
 
     # 3. get_system_status
     resp = srv.request("tools/call", {
@@ -452,6 +455,172 @@ def main():
 
     import shutil as _shutil
     _shutil.rmtree(v06_tmp, ignore_errors=True)
+
+    # 8d. v0.7.0 SSD Savior E2E Suite — 3 new tools + Negative Safety Invariants
+    v07_tmp = tempfile.mkdtemp(prefix="dc-mcp-v07-")
+    old_20d = time.time() - (20 * 86400)
+    old_3d = time.time() - (3 * 86400)
+
+    # (H) scan_project_artifacts (Rust target + Node node_modules/.next + plain build ignored + git ls-files guard)
+    pa_root = os.path.join(v07_tmp, "Projects")
+    rust_proj = os.path.join(pa_root, "demo-rust")
+    os.makedirs(os.path.join(rust_proj, "target", "debug"), exist_ok=True)
+    cargo_toml = os.path.join(rust_proj, "Cargo.toml")
+    rust_bin = os.path.join(rust_proj, "target", "debug", "deps.rlib")
+    with open(cargo_toml, "w", encoding="utf-8") as f:
+        f.write('[package]\nname = "demo"\nversion = "0.1.0"\n')
+    with open(rust_bin, "wb") as f:
+        f.write(b"R" * 16384)
+    for p_touch in (cargo_toml, rust_bin, os.path.join(rust_proj, "target", "debug"), os.path.join(rust_proj, "target"), rust_proj):
+        os.utime(p_touch, (old_20d, old_20d))
+
+    plain_proj = os.path.join(pa_root, "plain-folder")
+    os.makedirs(os.path.join(plain_proj, "build"), exist_ok=True)
+    plain_file = os.path.join(plain_proj, "build", "handwritten.txt")
+    with open(plain_file, "wb") as f:
+        f.write(b"P" * 16384)
+    for p_touch in (plain_file, os.path.join(plain_proj, "build"), plain_proj):
+        os.utime(p_touch, (old_20d, old_20d))
+
+    git_proj = os.path.join(pa_root, "cmake-git-tracked")
+    os.makedirs(os.path.join(git_proj, "build"), exist_ok=True)
+    cmake_cache = os.path.join(git_proj, "build", "CMakeCache.txt")
+    tracked_asset = os.path.join(git_proj, "build", "tracked_release_artifact.bin")
+    with open(cmake_cache, "w", encoding="utf-8") as f:
+        f.write("CMAKE_PROJECT_NAME:STATIC=Demo\n")
+    with open(tracked_asset, "wb") as f:
+        f.write(b"G" * 16384)
+    git_ok = False
+    try:
+        subprocess.run(["git", "init", git_proj], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["git", "-C", git_proj, "add", "-f", "build/tracked_release_artifact.bin"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        git_ok = True
+    except Exception:
+        git_ok = False
+    for p_touch in (cmake_cache, tracked_asset, os.path.join(git_proj, "build"), git_proj):
+        os.utime(p_touch, (old_20d, old_20d))
+
+    pa = call_tool(srv, "scan_project_artifacts", {
+        "roots": [pa_root],
+        "minInactiveDays": 14,
+        "minSizeBytes": 4096,
+    }, "scan_project_artifacts (dormant Rust + CMake git-tracked guard)")
+    pa_items = pa.get("items", [])
+    assert any(x["ecosystem"] == "rust" and x["verdict"] == "safe_to_delete" for x in pa_items), f"expected Rust target safe_to_delete: {pa}"
+    assert not any("plain-folder" in x["path"] for x in pa_items), f"plain build/ without manifest must be ignored: {pa}"
+    if git_ok:
+        git_items = [x for x in pa_items if "cmake-git-tracked" in x["path"]]
+        assert len(git_items) == 1 and git_items[0]["gitTracked"] is True and git_items[0]["verdict"] == "keep", f"git-tracked build/ must be forced to keep: {pa}"
+        git_rej = call_tool(srv, "delete", {
+            "scanId": pa["scanId"],
+            "items": [{"path": git_items[0]["path"], "approvalToken": git_items[0]["approvalToken"]}],
+            "confirmRisk": False,
+            "dryRun": False,
+        }, "scan_project_artifacts git-tracked delete without confirmRisk -> rejected")
+        assert git_rej.get("rejected", 0) >= 1 and os.path.exists(tracked_asset), f"git-tracked build/ must not be deleted: {git_rej}"
+
+    # (I) scan_container_virtual_disks (ext4.vhdx NEVER deletable via MCP + old Docker log cleanable)
+    ct_root = os.path.join(v07_tmp, "containers")
+    wsl_dir = os.path.join(ct_root, "Docker", "wsl", "data")
+    log_dir = os.path.join(ct_root, "Docker", "log", "vm")
+    os.makedirs(wsl_dir, exist_ok=True)
+    os.makedirs(log_dir, exist_ok=True)
+    vhdx_path = os.path.join(wsl_dir, "ext4.vhdx")
+    old_log = os.path.join(log_dir, "dockerd.log")
+    fresh_log = os.path.join(log_dir, "fresh.log")
+    with open(vhdx_path, "wb") as f:
+        f.write(b"vhdxfile" + b"\x00" * 16384)
+    with open(old_log, "wb") as f:
+        f.write(b"L" * 8192)
+    with open(fresh_log, "wb") as f:
+        f.write(b"F" * 8192)
+    os.utime(old_log, (old_3d, old_3d))
+
+    ct = call_tool(srv, "scan_container_virtual_disks", {
+        "customRoots": [ct_root],
+        "customRootsOnly": True,
+        "includeDockerDf": False,
+        "minLogAgeHours": 24,
+    }, "scan_container_virtual_disks (vhdx blocked + old host log session)")
+    assert ct.get("totalVirtualDisks", 0) == 1, f"expected 1 vhdx: {ct}"
+    vd = ct["virtualDisks"][0]
+    assert vd["deletableViaMcp"] is False and vd["verdict"] == "blocked" and len(vd.get("compactionCommands", [])) >= 1, f"vhdx must be blocked with runbook: {vd}"
+    vhdx_del = call_tool(srv, "delete", {
+        "scanId": ct["scanId"],
+        "items": [{"path": vhdx_path, "approvalToken": "00" * 32}],
+        "confirmRisk": True,
+        "dryRun": False,
+    }, "scan_container_virtual_disks delete(.vhdx) -> rejected, file preserved")
+    assert os.path.exists(vhdx_path), f"ext4.vhdx MUST NEVER be deleted: {vhdx_del}"
+    disp_logs = ct.get("disposableLogs", [])
+    assert len(disp_logs) == 1 and "dockerd.log" in disp_logs[0]["path"], f"expected only old dockerd.log: {ct}"
+
+    # (J) scan_model_duplicates (BLAKE3 canonical vs duplicate + real OS hardlink wastedBytes=0 + Conda .conda archive)
+    md_root = os.path.join(v07_tmp, "ai_models")
+    ollama_blobs = os.path.join(md_root, "ollama", "models", "blobs")
+    lms_dir = os.path.join(md_root, "lmstudio", "models")
+    hf_blobs = os.path.join(md_root, "huggingface", "hub", "models--demo", "blobs")
+    hf_snap = os.path.join(md_root, "huggingface", "hub", "models--demo", "snapshots", "main")
+    conda_pkgs = os.path.join(md_root, "miniconda3", "pkgs")
+    conda_extracted = os.path.join(conda_pkgs, "pytorch-2.5-extracted")
+    for d in (ollama_blobs, lms_dir, hf_blobs, hf_snap, conda_pkgs, conda_extracted):
+        os.makedirs(d, exist_ok=True)
+
+    weight_bytes = b"GGUF-WEIGHTS-PAYLOAD-" * 1024  # ~21 KiB
+    ollama_blob = os.path.join(ollama_blobs, "sha256-abcdef0123456789")
+    lms_copy = os.path.join(lms_dir, "model-q4.gguf")
+    with open(ollama_blob, "wb") as f:
+        f.write(weight_bytes)
+    with open(lms_copy, "wb") as f:
+        f.write(weight_bytes)
+    os.utime(ollama_blob, (old_20d, old_20d))
+    os.utime(lms_copy, (old_3d, old_3d))
+
+    hf_src = os.path.join(hf_blobs, "hl.safetensors")
+    hf_link = os.path.join(hf_snap, "hl.safetensors")
+    with open(hf_src, "wb") as f:
+        f.write(b"SAFETENSORS-HARDLINK-" * 1024)
+    hardlink_created = False
+    try:
+        os.link(hf_src, hf_link)
+        hardlink_created = True
+    except Exception:
+        hardlink_created = False
+
+    conda_tar = os.path.join(conda_pkgs, "pytorch-2.5.0.conda")
+    extracted_so = os.path.join(conda_extracted, "libtorch.so")
+    with open(conda_tar, "wb") as f:
+        f.write(b"C" * 8192)
+    with open(extracted_so, "wb") as f:
+        f.write(b"S" * 8192)
+    os.utime(conda_tar, (old_3d, old_3d))
+    os.utime(extracted_so, (old_3d, old_3d))
+
+    md = call_tool(srv, "scan_model_duplicates", {
+        "extraRoots": [md_root],
+        "customRootsOnly": True,
+        "minWeightBytes": 4096,
+        "includeCondaArchives": True,
+        "minArchiveAgeHours": 24,
+    }, "scan_model_duplicates (BLAKE3 dedup + OS hardlink + Conda archive)")
+    dgroups = md.get("duplicateGroups", [])
+    assert len(dgroups) == 1, f"expected exactly 1 physical duplicate group (hardlink excluded): {md}"
+    assert "sha256-abcdef0123456789" in dgroups[0]["canonicalPath"], f"expected ollama blob as canonical: {dgroups[0]}"
+    dup_entry = dgroups[0]["duplicates"][0]
+    assert "model-q4.gguf" in dup_entry["path"] and dup_entry["verdict"] == "review", f"expected lmstudio review duplicate: {dup_entry}"
+    if hardlink_created:
+        assert md.get("hardlinkedGroupsSkipped", 0) >= 1, f"expected hardlink group skipped: {md}"
+    conda_list = md.get("condaArchives", [])
+    assert len(conda_list) == 1 and "pytorch-2.5.0.conda" in conda_list[0]["path"], f"expected only .conda archive: {md}"
+    md_rej = call_tool(srv, "delete", {
+        "scanId": md["scanId"],
+        "items": [{"path": dup_entry["path"], "approvalToken": dup_entry["approvalToken"]}],
+        "confirmRisk": False,
+        "dryRun": False,
+    }, "scan_model_duplicates duplicate weight without confirmRisk -> rejected")
+    assert md_rej.get("rejected", 0) >= 1 and os.path.exists(lms_copy), f"model_duplicate must require confirmRisk: {md_rej}"
+
+    _shutil.rmtree(v07_tmp, ignore_errors=True)
 
     # 9. cleanup temp dir
     import shutil

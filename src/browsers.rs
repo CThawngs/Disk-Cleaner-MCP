@@ -333,7 +333,10 @@ fn discover_profiles(bname: &str, is_ff: bool, root: &Path) -> Vec<(String, Pb)>
 }
 
 fn detect_running(rows: &[[&str; 9]], custom_root: Option<&Path>) -> HashSet<String> {
-    let (mut running, mut sys) = (HashSet::new(), System::new());
+    let mut running = HashSet::new();
+    let Ok(mut sys) = System::new() else {
+        return running;
+    };
     let rk = ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet);
     sys.refresh_processes_specifics(ProcessesToUpdate::All, true, rk);
     let c_norm = custom_root.map(safety::normalize);
