@@ -15,18 +15,21 @@ A **Rust-based MCP (Model Context Protocol) server** that gives AI agents — He
 ## ✨ Features
 
 - **100% Pure Headless MCP Server (Zero GUI, Zero Telemetry)** — purpose-built for AI Agents & Coding Agents (`Claude Code`, `Cursor`, `Codex`, `Antigravity`, `OpenCode`, `Hermes`, `DeepSeek Harness`, `OpenMausBot`).
-- **20 MCP tools**:
+- **23 MCP tools**:
   | Tool | Description |
   |---|---|
   | `get_system_status` | Disk usage, user directories, platform info |
   | `get_metrics` | Aggregated disk metrics across mounted volumes (gated by `DCM_TELEMETRY`) |
+  | `scan_project_artifacts` | **NEW (v0.7.0)** — Dormant developer build/env scanner (`target`, `node_modules`, `.next`, `.turbo`, `.venv`, `.gradle`, CMake `build`) with ecosystem manifest proof, live compiler/IDE lock detection & `git ls-files` tracked-file protection |
+  | `scan_container_virtual_disks` | **NEW (v0.7.0)** — WSL2 / Docker / OrbStack / Podman virtual disk bloat auditor (`.vhdx`, `Docker.raw`, `.qcow2` physical vs apparent bytes + 3s `docker system df`), strictly read-only (`blocked`) with OS compaction runbooks + disposable host log cleanup |
+  | `scan_model_duplicates` | **NEW (v0.7.0)** — Hardlink-aware 3-stage SIMD `BLAKE3` AI/LLM/CV model weight deduplicator (`Ollama`, `HuggingFace`, `LM Studio`, `Whisper`, `PyTorch`, `ComfyUI`) + Conda `pkgs/*.conda`/`*.tar.bz2` archive cleaner |
   | `get_hardware_health` | **NEW (v0.6.0)** — Zero-estimation Battery + SSD SMART health + deterministic **Agent I/O Guardrails** (`ioSafetyLevel`, `avoidHeavyDiskHash`, `minimizeWriteChurn`, `diskPressureAction`) with serial/UUID redaction |
   | `smart_scan` | **NEW (v0.6.0)** — Zero-config Allowlist Smart Scan + Dev/Package caches + **AI-Stack Surgical Cleaner** (`HuggingFace *.incomplete`, `Ollama` orphan blobs, superseded `Playwright` browsers, AI IDE disposable caches with live-process Anti-Suicide lock) + `targetFreeBytes` reclaim planner |
   | `scan_browsers` | **NEW (v0.6.0)** — Per-browser & per-profile audit across 10 Chromium browsers + Firefox (`disposableCache` Green, `aiModels` Yellow incl. Gemini Nano/SODA/ScreenAI, opt-in `websiteStorage` Yellow via pure-Rust read-only LevelDB) |
   | `scan_app_leftovers` | **NEW (v0.6.0)** — Cross-platform orphaned app leftovers (`safeLeftovers` caches/logs vs `userData` profiles, `minAgeDays` default 30) |
   | `scan_startup_items` | **NEW (v0.6.0)** — Cross-platform Startup / LaunchAgents / systemd-user orphan detector with CLI secret redaction |
   | `find_large_forgotten` | **NEW (v0.6.0)** — Large & forgotten files grouped into 8 semantic kinds (`video`, `archive`, `installer`, `ml_model`, `disk_image`, `audio`, `image`, `document`, `other`) |
-  | `list_categories` | All 20 junk & storage categories + descriptions |
+  | `list_categories` | All 23 junk & storage categories + descriptions |
   | `scan` | Scan a root path (`maxEntries` 100–2M, `maxDepth` 1–64 caps), returns `scanId` + summary |
   | `analyze` | Filter/page entries (category, size, age, sort), returns approval tokens |
   | `get_tree` | **TreeSize-style folder tree** — recursive size per folder ("where did the space go?") |
@@ -46,7 +49,7 @@ A **Rust-based MCP (Model Context Protocol) server** that gives AI agents — He
   - Every delete/organize requires an **approval token** (SHA-256 of salt + path) issued per scan — stale/mismatched tokens are rejected
   - `organize` **never overwrites**: if the destination file exists, it's skipped
 
-- **20 junk & storage categories**: `temp`, `log`, `cache`, `browser_cache`, `browser_ai_model`, `browser_site_data`, `node_cache`, `python_cache`, `dev_cache`, `ml_cache`, `app_leftover`, `startup_orphan`, `large_forgotten`, `installer`, `download`, `backup`, `archive`, `crash_dump`, `thumbnail`, `other`
+- **23 junk & storage categories**: `temp`, `log`, `cache`, `browser_cache`, `browser_ai_model`, `browser_site_data`, `node_cache`, `python_cache`, `dev_cache`, `ml_cache`, `project_artifact`, `container_cache`, `model_duplicate`, `app_leftover`, `startup_orphan`, `large_forgotten`, `installer`, `download`, `backup`, `archive`, `crash_dump`, `thumbnail`, `other`
 - **Hard Never-Touch Guard**: Passwords/`Login Data`, `Cookies`, `History`, `Bookmarks`, `Local Storage`, `Extensions`, `key4.db`, `.ssh`, `.gnupg`, `.aws`, `.kube`, `.env*`, Keychains, and DPAPI vaults are strictly blocked at both scan and delete time.
 
 - **Multithreaded scan**: `jwalk` parallel directory walker + `rayon` metadata extraction
@@ -57,7 +60,7 @@ A **Rust-based MCP (Model Context Protocol) server** that gives AI agents — He
 
 ## 🚀 Quick Start
 
-### ⬇️ Latest Release (v0.3.0)
+### ⬇️ Latest Release (v0.7.0)
 
 Pre-built binaries for all platforms — no Rust toolchain needed:
 
@@ -73,14 +76,14 @@ Pre-built binaries for all platforms — no Rust toolchain needed:
 ### Install (Windows)
 
 ```powershell
-# Downloads the binary + registers with MCP clients
+# Atomic Hot-Swap binary upgrade (even while agents hold .exe open) + additive registration across 7 MCP clients
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
 ### Install (macOS/Linux)
 
 ```bash
-# One-liner — downloads the right binary for your arch + prints MCP config
+# One-liner — SHA-256 verified binary + additive registration across 7 MCP clients (Claude, Cursor, Gemini, Antigravity, OpenCode, Codex)
 curl -fsSL https://github.com/CThawngs/Disk-Cleaner-MCP/releases/latest/download/install.sh | bash
 ```
 

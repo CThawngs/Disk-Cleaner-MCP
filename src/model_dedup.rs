@@ -288,8 +288,8 @@ fn group_dups(weights: Vec<Wt>) -> (u64, RawGroups) {
             }
         }
         phys.values_mut().for_each(|g| g.sort());
+        hl_skip += phys.values().filter(|g| g.len() > 1).count() as u64;
         if phys.len() < 2 {
-            hl_skip += u64::from(phys.values().any(|g| g.len() > 1));
             continue;
         }
         let mut by_part: BTreeMap<[u8; 32], Vec<Vec<Wt>>> = BTreeMap::new();
